@@ -1,0 +1,4 @@
+.git
+seedance-direct-proxy
+*.test
+coverage.out
