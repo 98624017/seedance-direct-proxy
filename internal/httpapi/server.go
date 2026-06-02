@@ -21,10 +21,28 @@ type Server struct {
 
 func (s Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/", s.handleRoot)
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/v1/videos", s.handleVideos)
 	mux.HandleFunc("/v1/videos/", s.handleVideoTask)
 	return logMiddleware(s.logger(), mux)
+}
+
+func (s Server) handleRoot(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		writeError(w, http.StatusNotFound, "not found", nil)
+		return
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed", nil)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	if r.Method == http.MethodHead {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	_, _ = w.Write([]byte("ok"))
 }
 
 func (s Server) handleHealth(w http.ResponseWriter, r *http.Request) {

@@ -140,6 +140,27 @@ func TestCreateStreamsMediaToSeedanceAndPreservesOrder(t *testing.T) {
 	}
 }
 
+func TestRootSupportsNewAPIProbe(t *testing.T) {
+	api := Server{}
+
+	headReq := httptest.NewRequest(http.MethodHead, "/", nil)
+	headRec := httptest.NewRecorder()
+	api.Handler().ServeHTTP(headRec, headReq)
+	if headRec.Code != http.StatusOK {
+		t.Fatalf("HEAD / status = %d body=%s", headRec.Code, headRec.Body.String())
+	}
+	if headRec.Body.Len() != 0 {
+		t.Fatalf("HEAD / body length = %d, want 0", headRec.Body.Len())
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/", nil)
+	getRec := httptest.NewRecorder()
+	api.Handler().ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK || strings.TrimSpace(getRec.Body.String()) != "ok" {
+		t.Fatalf("GET / status = %d body=%s", getRec.Code, getRec.Body.String())
+	}
+}
+
 func TestQueryMapsSeedanceStatusAndVideoURL(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/seedanceapi/user/DataIndex" {
