@@ -126,6 +126,18 @@ docker build -t seedance-direct-proxy .
 docker run --rm -p 3000:3000 seedance-direct-proxy
 ```
 
+GitHub Container Registry 托管镜像：
+
+```bash
+docker run --rm -p 3000:3000 ghcr.io/98624017/seedance-direct-proxy:latest
+```
+
+镜像由仓库根目录的 GitHub Actions workflow 构建：
+
+```text
+.github/workflows/seedance-direct-proxy-ghcr.yml
+```
+
 ## NewAPI 配置
 
 渠道类型：
