@@ -62,7 +62,16 @@ images, image, input_reference, input_video, video_url, reference_video, audio, 
 
 ## 模型
 
-本代理不做模型校验和模型映射，直接把 `model` 透传给 Seedance 上游。模型映射由 NewAPI 渠道配置处理。
+本代理不做模型校验，默认把 `model` 透传给 Seedance 上游。
+
+以下兼容模型会在本层映射为 Seedance 原始模型，并覆盖 `resolution`：
+
+| 传入模型 | 上游模型 | `resolution` |
+|---|---|---|
+| `doubao-seedance-2-0-fast-260128-480p` | `doubao-seedance-2-0-fast-260128` | `"480p"` |
+| `doubao-seedance-2-0-260128-480p` | `doubao-seedance-2-0-260128` | `"480p"` |
+| `doubao-seedance-2-0-fast-260128-720p` | `doubao-seedance-2-0-fast-260128` | `"720p"` |
+| `doubao-seedance-2-0-260128-720p` | `doubao-seedance-2-0-260128` | `"720p"` |
 
 Seedance 原始模型包括：
 

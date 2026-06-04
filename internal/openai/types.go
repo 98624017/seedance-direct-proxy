@@ -81,6 +81,7 @@ func ParseCreateRequest(body []byte) (CreateRequest, error) {
 		aspectRatio = "16:9"
 	}
 
+	model, resolution := normalizeModelAndResolution(model, defaultString(raw["resolution"], "480p"))
 	files := collectReferenceFiles(raw)
 
 	return CreateRequest{
@@ -91,9 +92,24 @@ func ParseCreateRequest(body []byte) (CreateRequest, error) {
 		Files:         files,
 		GenerateAudio: defaultString(raw["generate_audio"], "true"),
 		Watermark:     defaultString(raw["watermark"], "false"),
-		Resolution:    defaultString(raw["resolution"], "480p"),
+		Resolution:    resolution,
 		Raw:           raw,
 	}, nil
+}
+
+func normalizeModelAndResolution(model, resolution string) (string, string) {
+	switch model {
+	case "doubao-seedance-2-0-fast-260128-480p":
+		return "doubao-seedance-2-0-fast-260128", "480p"
+	case "doubao-seedance-2-0-260128-480p":
+		return "doubao-seedance-2-0-260128", "480p"
+	case "doubao-seedance-2-0-fast-260128-720p":
+		return "doubao-seedance-2-0-fast-260128", "720p"
+	case "doubao-seedance-2-0-260128-720p":
+		return "doubao-seedance-2-0-260128", "720p"
+	default:
+		return model, resolution
+	}
 }
 
 func stringValue(value any) string {

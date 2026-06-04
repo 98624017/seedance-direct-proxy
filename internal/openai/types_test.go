@@ -53,7 +53,7 @@ func TestParseCreateRequestDefaultsAndReferenceOrder(t *testing.T) {
 	}
 }
 
-func TestParseCreateRequestDoesNotMapModel(t *testing.T) {
+func TestParseCreateRequestPreservesUnmappedModel(t *testing.T) {
 	raw := []byte(`{"model":"veofast","prompt":"test"}`)
 	req, err := ParseCreateRequest(raw)
 	if err != nil {
@@ -61,6 +61,65 @@ func TestParseCreateRequestDoesNotMapModel(t *testing.T) {
 	}
 	if req.Model != "veofast" {
 		t.Fatalf("model = %q", req.Model)
+	}
+}
+
+func TestParseCreateRequestMapsResolutionModelSuffix(t *testing.T) {
+	tests := []struct {
+		name           string
+		model          string
+		resolution     string
+		wantModel      string
+		wantResolution string
+	}{
+		{
+			name:           "fast 480p",
+			model:          "doubao-seedance-2-0-fast-260128-480p",
+			resolution:     "720p",
+			wantModel:      "doubao-seedance-2-0-fast-260128",
+			wantResolution: "480p",
+		},
+		{
+			name:           "standard 480p",
+			model:          "doubao-seedance-2-0-260128-480p",
+			resolution:     "720p",
+			wantModel:      "doubao-seedance-2-0-260128",
+			wantResolution: "480p",
+		},
+		{
+			name:           "fast 720p",
+			model:          "doubao-seedance-2-0-fast-260128-720p",
+			resolution:     "480p",
+			wantModel:      "doubao-seedance-2-0-fast-260128",
+			wantResolution: "720p",
+		},
+		{
+			name:           "standard 720p",
+			model:          "doubao-seedance-2-0-260128-720p",
+			resolution:     "480p",
+			wantModel:      "doubao-seedance-2-0-260128",
+			wantResolution: "720p",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw, _ := json.Marshal(map[string]any{
+				"model":      tt.model,
+				"prompt":     "test",
+				"resolution": tt.resolution,
+			})
+			req, err := ParseCreateRequest(raw)
+			if err != nil {
+				t.Fatalf("ParseCreateRequest() error = %v", err)
+			}
+			if req.Model != tt.wantModel {
+				t.Fatalf("model = %q, want %q", req.Model, tt.wantModel)
+			}
+			if req.Resolution != tt.wantResolution {
+				t.Fatalf("resolution = %q, want %q", req.Resolution, tt.wantResolution)
+			}
+		})
 	}
 }
 
