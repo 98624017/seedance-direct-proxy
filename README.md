@@ -146,7 +146,7 @@ doubao-seedance-2-0-260128-3
 |---|---|
 | `PORT` | `3000` |
 | `UPSTREAM_BASE_URL` | `http://119.45.252.34:8618` |
-| `ASSET_UPSTREAM_BASE_URL` | 默认同 `UPSTREAM_BASE_URL`，实际资产库通常为 `http://119.45.42.208:8620` |
+| `ASSET_UPSTREAM_BASE_URL` | `http://119.45.42.208:8620` |
 | `MAX_REFERENCE_FILES` | `12` |
 | `UPSTREAM_CREATE_TIMEOUT_SECONDS` | `180` |
 | `UPSTREAM_QUERY_TIMEOUT_SECONDS` | `30` |
@@ -273,4 +273,4 @@ curl -X POST 'http://127.0.0.1:3000/v1/videos' \
 
 删除真人形象资产资源时，使用 `POST /api/task/token/asset/delete` 并传 `task_id`。代理会先按任务 ID 查询资产库资源，再调用资产库 `/resourcesapi/user/Resources` 删除真实资源。
 
-注意：视频生成接口和资产库接口可能不在同一个上游 host。视频生成使用 `UPSTREAM_BASE_URL`，资产创建/查询使用 `ASSET_UPSTREAM_BASE_URL`；如果未配置，资产库默认回退到 `UPSTREAM_BASE_URL`。
+注意：视频生成接口和资产库接口不在同一个上游 host。视频生成使用 `UPSTREAM_BASE_URL`，资产创建/查询使用 `ASSET_UPSTREAM_BASE_URL`；如果未配置，资产库默认使用 `http://119.45.42.208:8620`。

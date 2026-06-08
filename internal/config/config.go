@@ -23,12 +23,18 @@ type Config struct {
 	ShutdownTimeout          time.Duration
 }
 
+const (
+	defaultUpstreamBaseURL      = "http://119.45.252.34:8618"
+	defaultAssetUpstreamBaseURL = "http://119.45.42.208:8620"
+)
+
 func Load() Config {
-	upstreamBaseURL := trimRightSlash(getString("UPSTREAM_BASE_URL", "http://119.45.252.34:8618"))
+	upstreamBaseURL := trimRightSlash(getString("UPSTREAM_BASE_URL", defaultUpstreamBaseURL))
+	assetUpstreamBaseURL := trimRightSlash(getString("ASSET_UPSTREAM_BASE_URL", defaultAssetUpstreamBaseURL))
 	return Config{
 		Port:                     getString("PORT", "3000"),
 		UpstreamBaseURL:          upstreamBaseURL,
-		AssetUpstreamBaseURL:     trimRightSlash(getString("ASSET_UPSTREAM_BASE_URL", upstreamBaseURL)),
+		AssetUpstreamBaseURL:     assetUpstreamBaseURL,
 		MaxReferenceFiles:        getInt("MAX_REFERENCE_FILES", 12),
 		MaxSingleMediaBytes:      getInt64("MAX_SINGLE_MEDIA_BYTES", 52428800),
 		MaxTotalMediaBytes:       getInt64("MAX_TOTAL_MEDIA_BYTES", 209715200),
