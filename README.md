@@ -25,6 +25,47 @@ GET /v1/videos/{task_id}
 Authorization: Bearer <Seedance上游token>
 ```
 
+创建真人形象资产任务：
+
+```http
+POST /v1/videos
+Authorization: Bearer <Seedance上游token>
+Content-Type: application/json
+```
+
+```json
+{
+  "model": "seedance-asset",
+  "prompt": "林春芽",
+  "input_reference": "https://example.com/person.png"
+}
+```
+
+查询仍使用：
+
+```http
+GET /v1/videos/{task_id}
+Authorization: Bearer <Seedance上游token>
+```
+
+成功后响应会同时返回顶层 `asset_id`、`asset_uri` 和 `metadata.seedance.asset_id`、`metadata.seedance.asset_uri`。
+
+删除真人形象资产资源：
+
+```http
+POST /api/task/token/asset/delete
+Authorization: Bearer <Seedance上游token>
+Content-Type: application/json
+```
+
+```json
+{
+  "task_id": "asset_req_1780830000_abcdef123456"
+}
+```
+
+这个接口用于兼容 NewAPI 的上游动作接口。代理按 `task_id` 查询资产库资源，再调用资产库 `DELETE /resourcesapi/user/Resources` 删除真实资源。下游用户权限判断应由 NewAPI 完成，不要把这个代理接口直接暴露给最终用户。
+
 健康检查：
 
 ```http
@@ -47,7 +88,7 @@ GET /healthz
   "files": [
     "https://example.com/ref-1.jpg",
     "https://example.com/ref-2.jpg",
-    "https://example.com/ref-3.jpg"
+    "asset://asset-xxxx"
   ]
 }
 ```
@@ -58,7 +99,7 @@ GET /healthz
 images, image, input_reference, input_video, video_url, reference_video, audio, audios
 ```
 
-这些字段最终都会作为上游 multipart `files` 字段转发。
+这些字段最终都会作为上游 multipart `files` 文本字段直接转发，支持公网 URL 和上游资源库地址 `asset://资产id`。代理不再先下载素材再以二进制文件上传。
 
 ## 模型
 
@@ -105,13 +146,13 @@ doubao-seedance-2-0-260128-3
 |---|---|
 | `PORT` | `3000` |
 | `UPSTREAM_BASE_URL` | `http://119.45.252.34:8618` |
+| `ASSET_UPSTREAM_BASE_URL` | 默认同 `UPSTREAM_BASE_URL`，实际资产库通常为 `http://119.45.42.208:8620` |
 | `MAX_REFERENCE_FILES` | `12` |
-| `MAX_SINGLE_MEDIA_BYTES` | `52428800` |
-| `MAX_TOTAL_MEDIA_BYTES` | `209715200` |
-| `MEDIA_PREFETCH_CONCURRENCY` | `6` |
-| `MEDIA_FETCH_TIMEOUT_SECONDS` | `75` |
 | `UPSTREAM_CREATE_TIMEOUT_SECONDS` | `180` |
 | `UPSTREAM_QUERY_TIMEOUT_SECONDS` | `30` |
+| `ASSET_LIST_BASE_PAGES` | `10` |
+| `ASSET_LIST_MEDIUM_PAGES` | `20` |
+| `ASSET_LIST_MAX_PAGES` | `50` |
 
 ## 运行
 
@@ -167,6 +208,14 @@ Key：
 <Seedance上游token>
 ```
 
+资产库任务使用同一个 `/v1/videos` 入口。NewAPI 里需要手动配置虚拟模型：
+
+```text
+seedance-asset
+```
+
+按次价格、渠道模型权限和分组由 NewAPI 后台配置；本项目不要求写入 NewAPI 默认模型/价格表。
+
 如果你的 NewAPI 仍使用 `baseUrl|token` 格式，本代理也兼容：
 
 ```text
@@ -191,7 +240,7 @@ curl -X POST 'http://127.0.0.1:3000/v1/videos' \
     "watermark": false,
     "files": [
       "https://example.com/ref-1.jpg",
-      "https://example.com/ref-2.jpg"
+      "asset://asset-xxxx"
     ]
   }'
 ```
@@ -203,11 +252,25 @@ curl 'http://127.0.0.1:3000/v1/videos/18' \
   -H 'Authorization: Bearer <Seedance上游token>'
 ```
 
-## 性能说明
+创建资产：
 
-创建任务使用真正流式 multipart：
+```bash
+curl -X POST 'http://127.0.0.1:3000/v1/videos' \
+  -H 'Authorization: Bearer <Seedance上游token>' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "seedance-asset",
+    "prompt": "林春芽",
+    "input_reference": "https://example.com/person.png"
+  }'
+```
 
-- 素材 URL 并发预取。
-- multipart part 按输入顺序写入。
-- 文件内容从素材 HTTP response body 直接复制到上游 multipart writer。
-- 不写磁盘，不先完整下载所有素材。
+## 转发说明
+
+创建视频任务时，代理只构造 multipart 表单并把 `files` 的值按原顺序写给上游；素材下载、资源库地址解析和可访问性校验由 Seedance 上游负责。
+
+创建真人形象资产任务时，代理仍调用资产库 `/resources/user/Resources`，把图片 URL 写入 JSON 字段 `OssPath`。资产查询成功后，`asset_id` 是上游原始资产 ID，`asset_uri` 是可直接放进视频生成 `files` 的 `asset://...` 地址。
+
+删除真人形象资产资源时，使用 `POST /api/task/token/asset/delete` 并传 `task_id`。代理会先按任务 ID 查询资产库资源，再调用资产库 `/resourcesapi/user/Resources` 删除真实资源。
+
+注意：视频生成接口和资产库接口可能不在同一个上游 host。视频生成使用 `UPSTREAM_BASE_URL`，资产创建/查询使用 `ASSET_UPSTREAM_BASE_URL`；如果未配置，资产库默认回退到 `UPSTREAM_BASE_URL`。

@@ -38,6 +38,58 @@ type QueryData struct {
 	UseDuration int64  `json:"UseDuration"`
 }
 
+type CreateAssetResponse struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Data    any    `json:"data"`
+	Success bool   `json:"success"`
+}
+
+type DeleteAssetResponse struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Data    any    `json:"data"`
+	Success bool   `json:"success"`
+}
+
+type AssetListResponse struct {
+	Code    int           `json:"code"`
+	Message string        `json:"message"`
+	Data    AssetListData `json:"data"`
+	Success bool          `json:"success"`
+}
+
+type AssetListData struct {
+	Data  []AssetResource `json:"data"`
+	Total int             `json:"total"`
+}
+
+type AssetResource struct {
+	ID                   int64  `json:"Id"`
+	CreatedAt            string `json:"CreatedAt"`
+	UpdatedAt            string `json:"UpdatedAt"`
+	CreatedID            int64  `json:"CreatedId"`
+	CreatedName          string `json:"CreatedName"`
+	UserUserID           int64  `json:"UserUserId"`
+	UserResourcesGroupID int64  `json:"UserResourcesGroupId"`
+	Name                 string `json:"Name"`
+	OssPath              string `json:"OssPath"`
+	Desc                 string `json:"Desc"`
+	Prompt               string `json:"Prompt"`
+	UserResourcesTypeID  int64  `json:"UserResourcesTypeId"`
+	Status               int    `json:"Status"`
+	StatusText           string `json:"StatusText"`
+	Message              string `json:"Message"`
+	AssetID              string `json:"AssetId"`
+}
+
+type DeletedAsset struct {
+	TaskID     string
+	ResourceID int64
+	AssetID    string
+	AssetURI   string
+}
+
 func NormalizeCreate(resp CreateResponse, model string, now time.Time) openai.VideoResponse {
 	id := strconv.FormatInt(resp.Data.ID, 10)
 	return openai.VideoResponse{
@@ -103,6 +155,111 @@ func NormalizeQuery(resp QueryResponse, model string) openai.VideoResponse {
 	}
 
 	return out
+}
+
+func NormalizeAssetQuery(taskID string, item AssetResource, scannedPages int) openai.VideoResponse {
+	status := "in_progress"
+	progress := 50
+	var errDetail *openai.ErrorDetail
+	message := strings.TrimSpace(item.Message)
+	statusText := strings.TrimSpace(item.StatusText)
+	assetID := strings.TrimSpace(item.AssetID)
+	assetURI := assetURI(assetID)
+	if assetID != "" {
+		status = "completed"
+		progress = 100
+	} else if assetResourceFailed(message, statusText) {
+		status = "failed"
+		progress = 100
+		if message == "" {
+			message = statusText
+		}
+		if message == "" {
+			message = "Seedance asset task failed"
+		}
+		errDetail = &openai.ErrorDetail{Code: fmt.Sprintf("%d", item.Status), Message: message}
+	}
+
+	name := stripAssetTraceSuffix(item.Name)
+	out := openai.VideoResponse{
+		ID:        taskID,
+		TaskID:    taskID,
+		Object:    "video",
+		Model:     openai.AssetModel,
+		Status:    status,
+		Progress:  progress,
+		AssetID:   assetID,
+		AssetURI:  assetURI,
+		CreatedAt: parseUnix(item.CreatedAt),
+		UpdatedAt: parseUnix(item.UpdatedAt),
+		Error:     errDetail,
+		Metadata: map[string]any{
+			"seedance": map[string]any{
+				"kind":                   "asset",
+				"asset_id":               assetID,
+				"asset_uri":              assetURI,
+				"resource_id":            item.ID,
+				"name":                   name,
+				"upstream_name":          item.Name,
+				"oss_path":               item.OssPath,
+				"status":                 item.Status,
+				"status_text":            item.StatusText,
+				"message":                item.Message,
+				"scanned_pages":          scannedPages,
+				"user_resources_type_id": item.UserResourcesTypeID,
+			},
+		},
+	}
+	return out
+}
+
+func assetURI(assetID string) string {
+	assetID = strings.TrimSpace(assetID)
+	if assetID == "" {
+		return ""
+	}
+	return "asset://" + assetID
+}
+
+func NormalizeAssetNotFound(taskID string, scannedPages int, resp AssetListResponse) openai.VideoResponse {
+	return openai.VideoResponse{
+		ID:       taskID,
+		TaskID:   taskID,
+		Object:   "video",
+		Model:    openai.AssetModel,
+		Status:   "in_progress",
+		Progress: 50,
+		Metadata: map[string]any{
+			"seedance": map[string]any{
+				"kind":          "asset",
+				"scanned_pages": scannedPages,
+				"message":       "asset resource not found yet",
+				"total":         resp.Data.Total,
+			},
+		},
+	}
+}
+
+func assetResourceFailed(message, statusText string) bool {
+	text := strings.ToLower(strings.TrimSpace(message + " " + statusText))
+	if text == "" {
+		return false
+	}
+	for _, marker := range []string{"失败", "错误", "异常", "未通过", "fail", "failed", "error"} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func stripAssetTraceSuffix(name string) string {
+	const marker = "__asset_req_"
+	idx := strings.LastIndex(name, marker)
+	if idx < 0 {
+		return strings.TrimSpace(name)
+	}
+	return strings.TrimSpace(name[:idx])
 }
 
 func StatusName(status int) string {

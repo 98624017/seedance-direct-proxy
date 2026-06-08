@@ -3,20 +3,18 @@ package seedance
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
-	"net/textproto"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/98624017/seedance-direct-proxy/internal/config"
-	"github.com/98624017/seedance-direct-proxy/internal/mediafetch"
 	"github.com/98624017/seedance-direct-proxy/internal/openai"
 )
 
@@ -129,6 +127,190 @@ func (c Client) Query(ctx context.Context, taskID int64, token string) (openai.V
 	return NormalizeQuery(out, ""), nil
 }
 
+func (c Client) CreateAsset(ctx context.Context, req openai.AssetRequest, token string) (openai.VideoResponse, error) {
+	client := c.httpClient()
+	cfg := c.Config
+	ctx, cancel := contextWithOptionalTimeout(ctx, cfg.UpstreamCreateTimeout)
+	defer cancel()
+
+	now := time.Now()
+	if c.Now != nil {
+		now = c.Now()
+	}
+	taskID, err := assetTaskID(now)
+	if err != nil {
+		return openai.VideoResponse{}, err
+	}
+	upstreamName := assetUpstreamName(req.Name, taskID)
+	payload := map[string]any{
+		"Name":    upstreamName,
+		"OssPath": req.ImageURL,
+	}
+	body, _ := json.Marshal(payload)
+	upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.assetUpstreamBaseURL()+"/resources/user/Resources", bytes.NewReader(body))
+	if err != nil {
+		return openai.VideoResponse{}, err
+	}
+	upstreamReq.Header.Set("Content-Type", "application/json")
+	upstreamReq.Header.Set("token", token)
+
+	resp, err := client.Do(upstreamReq)
+	if err != nil {
+		return openai.VideoResponse{}, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return openai.VideoResponse{}, readUpstreamError(resp)
+	}
+
+	var out CreateAssetResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return openai.VideoResponse{}, fmt.Errorf("decode seedance asset create response: %w", err)
+	}
+	if out.Code != 0 || !out.Success {
+		return openai.VideoResponse{}, UpstreamError{StatusCode: resp.StatusCode, Message: out.Message}
+	}
+
+	return openai.VideoResponse{
+		ID:        taskID,
+		TaskID:    taskID,
+		Object:    "video",
+		Model:     openai.AssetModel,
+		Status:    "queued",
+		Progress:  0,
+		CreatedAt: now.Unix(),
+		Metadata: assetMetadata(map[string]any{
+			"kind":                "asset",
+			"name":                req.Name,
+			"upstream_name":       upstreamName,
+			"oss_path":            req.ImageURL,
+			"ignored_image_count": req.IgnoredImageCount,
+			"code":                out.Code,
+			"message":             out.Message,
+			"success":             out.Success,
+		}),
+	}, nil
+}
+
+func (c Client) QueryAsset(ctx context.Context, taskID string, token string) (openai.VideoResponse, error) {
+	ctx, cancel := contextWithOptionalTimeout(ctx, c.Config.UpstreamQueryTimeout)
+	defer cancel()
+
+	item, scannedPages, lastResponse, ok, err := c.findAssetResource(ctx, taskID, token)
+	if err != nil {
+		return openai.VideoResponse{}, err
+	}
+	if ok {
+		return NormalizeAssetQuery(taskID, item, scannedPages), nil
+	}
+	return NormalizeAssetNotFound(taskID, scannedPages, lastResponse), nil
+}
+
+func (c Client) DeleteAssetByTaskID(ctx context.Context, taskID string, token string) (DeletedAsset, error) {
+	ctx, cancel := contextWithOptionalTimeout(ctx, c.Config.UpstreamQueryTimeout)
+	defer cancel()
+
+	item, _, _, ok, err := c.findAssetResource(ctx, taskID, token)
+	if err != nil {
+		return DeletedAsset{}, err
+	}
+	if !ok {
+		return DeletedAsset{}, UpstreamError{StatusCode: http.StatusNotFound, Message: "asset resource not found"}
+	}
+	if item.ID <= 0 {
+		return DeletedAsset{}, UpstreamError{StatusCode: http.StatusBadGateway, Message: "asset resource id is missing"}
+	}
+	if err := c.deleteAssetResource(ctx, item.ID, token); err != nil {
+		return DeletedAsset{}, err
+	}
+	assetID := strings.TrimSpace(item.AssetID)
+	return DeletedAsset{
+		TaskID:     taskID,
+		ResourceID: item.ID,
+		AssetID:    assetID,
+		AssetURI:   assetURI(assetID),
+	}, nil
+}
+
+func (c Client) deleteAssetResource(ctx context.Context, resourceID int64, token string) error {
+	client := c.httpClient()
+	payload := map[string]int64{"Id": resourceID}
+	body, _ := json.Marshal(payload)
+	upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.assetUpstreamBaseURL()+"/resourcesapi/user/Resources", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	upstreamReq.Header.Set("Content-Type", "application/json")
+	upstreamReq.Header.Set("token", token)
+
+	resp, err := client.Do(upstreamReq)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return readUpstreamError(resp)
+	}
+
+	var out DeleteAssetResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return fmt.Errorf("decode seedance asset delete response: %w", err)
+	}
+	if out.Code != 0 || !out.Success {
+		return UpstreamError{StatusCode: resp.StatusCode, Message: out.Message}
+	}
+	return nil
+}
+
+func (c Client) findAssetResource(ctx context.Context, taskID string, token string) (AssetResource, int, AssetListResponse, bool, error) {
+	client := c.httpClient()
+	cfg := c.Config
+
+	now := time.Now()
+	if c.Now != nil {
+		now = c.Now()
+	}
+	maxPages := assetListPagesForTask(taskID, now, cfg.AssetListBasePages, cfg.AssetListMediumPages, cfg.AssetListMaxPages)
+	var lastResponse AssetListResponse
+	for page := 1; page <= maxPages; page++ {
+		payload := map[string]int{"Page": page}
+		body, _ := json.Marshal(payload)
+		upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.assetUpstreamBaseURL()+"/resources/user/ResourcesList", bytes.NewReader(body))
+		if err != nil {
+			return AssetResource{}, maxPages, lastResponse, false, err
+		}
+		upstreamReq.Header.Set("Content-Type", "application/json")
+		upstreamReq.Header.Set("token", token)
+
+		resp, err := client.Do(upstreamReq)
+		if err != nil {
+			return AssetResource{}, maxPages, lastResponse, false, err
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			err := readUpstreamError(resp)
+			return AssetResource{}, maxPages, lastResponse, false, err
+		}
+		var out AssetListResponse
+		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+			_ = resp.Body.Close()
+			return AssetResource{}, maxPages, lastResponse, false, fmt.Errorf("decode seedance asset list response: %w", err)
+		}
+		_ = resp.Body.Close()
+		if out.Code != 0 || !out.Success {
+			return AssetResource{}, maxPages, lastResponse, false, UpstreamError{StatusCode: resp.StatusCode, Message: out.Message}
+		}
+		lastResponse = out
+		for _, item := range out.Data.Data {
+			if assetResourceNameMatchesTask(item.Name, taskID) {
+				return item, maxPages, lastResponse, true, nil
+			}
+		}
+	}
+	return AssetResource{}, maxPages, lastResponse, false, nil
+}
+
 func (c Client) buildMultipartStream(ctx context.Context, req openai.CreateRequest) (io.ReadCloser, string, <-chan error) {
 	pr, pw := io.Pipe()
 	writer := multipart.NewWriter(pw)
@@ -185,64 +367,17 @@ func (c Client) writeMultipart(ctx context.Context, writer *multipart.Writer, re
 		return nil
 	}
 
-	fetcher := mediafetch.Fetcher{
-		Client:              c.httpClient(),
-		Timeout:             c.Config.MediaFetchTimeout,
-		MaxSingleMediaBytes: c.Config.MaxSingleMediaBytes,
-		MaxTotalMediaBytes:  c.Config.MaxTotalMediaBytes,
-		PrefetchConcurrency: c.Config.MediaPrefetchConcurrency,
-	}
-	results, cancel, err := fetcher.Start(ctx, req.Files)
-	if err != nil {
-		return err
-	}
-	defer cancel()
-
-	var total int64
-	var totalMu sync.Mutex
-	for _, ch := range results {
+	for _, file := range req.Files {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case result, ok := <-ch:
-			if !ok {
-				return fmt.Errorf("media fetch ended unexpectedly")
-			}
-			if result.Err != nil {
-				return result.Err
-			}
-			if result.Body == nil {
-				return fmt.Errorf("media response body is empty")
-			}
-			if err := c.writeFilePart(writer, result, &total, &totalMu); err != nil {
-				_ = result.Body.Close()
-				return err
-			}
+		default:
+		}
+		if err := writer.WriteField("files", file); err != nil {
+			return err
 		}
 	}
 	return nil
-}
-
-func (c Client) writeFilePart(writer *multipart.Writer, result mediafetch.Result, total *int64, totalMu *sync.Mutex) error {
-	defer result.Body.Close()
-
-	header := make(textproto.MIMEHeader)
-	header.Set("Content-Disposition", fmt.Sprintf(`form-data; name="files"; filename="%s"`, escapeQuotes(result.Filename)))
-	header.Set("Content-Type", result.ContentType)
-	part, err := writer.CreatePart(header)
-	if err != nil {
-		return err
-	}
-
-	counting := &mediafetch.CountingReader{
-		Reader:    result.Body,
-		MaxSingle: c.Config.MaxSingleMediaBytes,
-		MaxTotal:  c.Config.MaxTotalMediaBytes,
-		Total:     total,
-		TotalMu:   totalMu,
-	}
-	_, err = io.Copy(part, counting)
-	return err
 }
 
 func (c Client) httpClient() *http.Client {
@@ -250,6 +385,13 @@ func (c Client) httpClient() *http.Client {
 		return c.HTTPClient
 	}
 	return http.DefaultClient
+}
+
+func (c Client) assetUpstreamBaseURL() string {
+	if strings.TrimSpace(c.Config.AssetUpstreamBaseURL) != "" {
+		return strings.TrimRight(c.Config.AssetUpstreamBaseURL, "/")
+	}
+	return strings.TrimRight(c.Config.UpstreamBaseURL, "/")
 }
 
 func readUpstreamError(resp *http.Response) error {
@@ -280,8 +422,49 @@ func isExpectedPipeClose(err error) bool {
 		errors.Is(err, context.DeadlineExceeded)
 }
 
-func escapeQuotes(value string) string {
-	return strings.ReplaceAll(value, `"`, `\"`)
+func assetTaskID(now time.Time) (string, error) {
+	buf := make([]byte, 6)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("asset_req_%d_%x", now.Unix(), buf), nil
+}
+
+func assetUpstreamName(name, taskID string) string {
+	return strings.TrimSpace(name) + "__" + taskID
+}
+
+func assetResourceNameMatchesTask(name, taskID string) bool {
+	return strings.HasSuffix(strings.TrimSpace(name), "__"+taskID)
+}
+
+func assetMetadata(seedance map[string]any) map[string]any {
+	return map[string]any{"seedance": seedance}
+}
+
+func assetListPagesForTask(taskID string, now time.Time, basePages, mediumPages, maxPages int) int {
+	if basePages <= 0 {
+		basePages = 10
+	}
+	if mediumPages <= 0 {
+		mediumPages = 20
+	}
+	if maxPages <= 0 {
+		maxPages = 50
+	}
+	createdAt := openai.ParseAssetTaskUnix(taskID)
+	if createdAt <= 0 {
+		return basePages
+	}
+	age := now.Sub(time.Unix(createdAt, 0))
+	switch {
+	case age >= time.Hour:
+		return maxPages
+	case age >= 10*time.Minute:
+		return mediumPages
+	default:
+		return basePages
+	}
 }
 
 func ParseTaskID(value string) (int64, error) {

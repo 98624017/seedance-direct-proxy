@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/98624017/seedance-direct-proxy/internal/config"
 	"github.com/98624017/seedance-direct-proxy/internal/openai"
@@ -19,10 +20,15 @@ type Server struct {
 	Logger *slog.Logger
 }
 
+type deleteAssetRequest struct {
+	TaskID string `json:"task_id"`
+}
+
 func (s Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleRoot)
 	mux.HandleFunc("/healthz", s.handleHealth)
+	mux.HandleFunc("/api/task/token/asset/delete", s.handleTokenAssetDelete)
 	mux.HandleFunc("/v1/videos", s.handleVideos)
 	mux.HandleFunc("/v1/videos/", s.handleVideoTask)
 	return logMiddleware(s.logger(), mux)
@@ -75,6 +81,21 @@ func (s Server) handleVideos(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "failed to read request body", nil)
 		return
 	}
+	if openai.IsAssetModel(openai.ModelFromBody(body)) {
+		assetReq, err := openai.ParseAssetRequest(body)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error(), nil)
+			return
+		}
+		resp, err := s.Client.CreateAsset(r.Context(), assetReq, token)
+		if err != nil {
+			s.writeUpstreamError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
 	createReq, err := openai.ParseCreateRequest(body)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error(), nil)
@@ -109,6 +130,20 @@ func (s Server) handleVideoTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not found", nil)
 		return
 	}
+	if strings.HasPrefix(taskIDRaw, "asset_req_") {
+		if err := openai.ValidateAssetTaskID(taskIDRaw); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error(), nil)
+			return
+		}
+		resp, err := s.Client.QueryAsset(r.Context(), taskIDRaw, token)
+		if err != nil {
+			s.writeUpstreamError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
 	taskID, err := seedance.ParseTaskID(taskIDRaw)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error(), nil)
@@ -121,6 +156,48 @@ func (s Server) handleVideoTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s Server) handleTokenAssetDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed", nil)
+		return
+	}
+	token, err := extractBearerToken(r.Header.Get("Authorization"))
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, err.Error(), nil)
+		return
+	}
+
+	var req deleteAssetRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body", nil)
+		return
+	}
+	req.TaskID = strings.TrimSpace(req.TaskID)
+	if err := openai.ValidateAssetTaskID(req.TaskID); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), nil)
+		return
+	}
+
+	deleted, err := s.Client.DeleteAssetByTaskID(r.Context(), req.TaskID, token)
+	if err != nil {
+		s.writeUpstreamError(w, err)
+		return
+	}
+	deletedAt := time.Now().Unix()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"message": "",
+		"data": map[string]any{
+			"task_id":     deleted.TaskID,
+			"deleted":     true,
+			"deleted_at":  deletedAt,
+			"resource_id": deleted.ResourceID,
+			"asset_id":    deleted.AssetID,
+			"asset_uri":   deleted.AssetURI,
+		},
+	})
 }
 
 func (s Server) writeUpstreamError(w http.ResponseWriter, err error) {

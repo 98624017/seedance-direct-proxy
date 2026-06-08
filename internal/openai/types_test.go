@@ -135,3 +135,78 @@ func TestParseCreateRequestRequiresModelAndPrompt(t *testing.T) {
 		}
 	}
 }
+
+func TestParseAssetRequestTakesFirstImageAndCountsIgnored(t *testing.T) {
+	raw := []byte(`{
+		"model":"seedance-asset",
+		"prompt":"林春芽",
+		"input_reference":"https://asset.test/primary.jpg",
+		"image":"https://asset.test/ignored-1.jpg",
+		"images":["https://asset.test/ignored-2.jpg"],
+		"files":["https://asset.test/ignored-3.jpg"]
+	}`)
+	req, err := ParseAssetRequest(raw)
+	if err != nil {
+		t.Fatalf("ParseAssetRequest() error = %v", err)
+	}
+	if req.Name != "林春芽" || req.ImageURL != "https://asset.test/primary.jpg" {
+		t.Fatalf("unexpected request: %#v", req)
+	}
+	if req.IgnoredImageCount != 3 {
+		t.Fatalf("ignored count = %d, want 3", req.IgnoredImageCount)
+	}
+}
+
+func TestParseAssetRequestRejectsUnsafeURLs(t *testing.T) {
+	for _, imageURL := range []string{
+		"file:///tmp/a.jpg",
+		"data:image/png;base64,aaaa",
+		"http://localhost/a.jpg",
+		"http://127.0.0.1/a.jpg",
+		"http://10.0.0.1/a.jpg",
+		"http://172.16.0.1/a.jpg",
+		"http://192.168.1.1/a.jpg",
+		"http://169.254.1.1/a.jpg",
+		"http://[fe80::1%25eth0]/a.jpg",
+	} {
+		raw, _ := json.Marshal(map[string]any{
+			"model":           "seedance-asset",
+			"prompt":          "asset",
+			"input_reference": imageURL,
+		})
+		if _, err := ParseAssetRequest(raw); err == nil {
+			t.Fatalf("ParseAssetRequest(%q) expected error", imageURL)
+		}
+	}
+}
+
+func TestValidateAssetTaskIDRejectsShortPrefixes(t *testing.T) {
+	valid := []string{
+		"asset_req_1780830000_abcdef123456",
+		"asset_req_1780830000_0123abcdef45",
+	}
+	for _, taskID := range valid {
+		if err := ValidateAssetTaskID(taskID); err != nil {
+			t.Fatalf("ValidateAssetTaskID(%q) error = %v", taskID, err)
+		}
+	}
+
+	invalid := []string{
+		"",
+		"asset_req_",
+		"asset_req_1",
+		"asset_req_1_",
+		"asset_req_0_abcdef",
+		"asset_req_x_abcdef",
+		"asset_req_1780830000_",
+		"asset_req_1780830000_abcdef",
+		"asset_req_1780830000_ABCDEF",
+		"asset_req_1780830000_abcdef123456_extra",
+		"video_req_1780830000_abcdef",
+	}
+	for _, taskID := range invalid {
+		if err := ValidateAssetTaskID(taskID); err == nil {
+			t.Fatalf("ValidateAssetTaskID(%q) expected error", taskID)
+		}
+	}
+}

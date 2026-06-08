@@ -9,6 +9,7 @@ import (
 type Config struct {
 	Port                     string
 	UpstreamBaseURL          string
+	AssetUpstreamBaseURL     string
 	MaxReferenceFiles        int
 	MaxSingleMediaBytes      int64
 	MaxTotalMediaBytes       int64
@@ -16,13 +17,18 @@ type Config struct {
 	MediaFetchTimeout        time.Duration
 	UpstreamCreateTimeout    time.Duration
 	UpstreamQueryTimeout     time.Duration
+	AssetListBasePages       int
+	AssetListMediumPages     int
+	AssetListMaxPages        int
 	ShutdownTimeout          time.Duration
 }
 
 func Load() Config {
+	upstreamBaseURL := trimRightSlash(getString("UPSTREAM_BASE_URL", "http://119.45.252.34:8618"))
 	return Config{
 		Port:                     getString("PORT", "3000"),
-		UpstreamBaseURL:          trimRightSlash(getString("UPSTREAM_BASE_URL", "http://119.45.252.34:8618")),
+		UpstreamBaseURL:          upstreamBaseURL,
+		AssetUpstreamBaseURL:     trimRightSlash(getString("ASSET_UPSTREAM_BASE_URL", upstreamBaseURL)),
 		MaxReferenceFiles:        getInt("MAX_REFERENCE_FILES", 12),
 		MaxSingleMediaBytes:      getInt64("MAX_SINGLE_MEDIA_BYTES", 52428800),
 		MaxTotalMediaBytes:       getInt64("MAX_TOTAL_MEDIA_BYTES", 209715200),
@@ -30,6 +36,9 @@ func Load() Config {
 		MediaFetchTimeout:        time.Duration(getInt("MEDIA_FETCH_TIMEOUT_SECONDS", 75)) * time.Second,
 		UpstreamCreateTimeout:    time.Duration(getInt("UPSTREAM_CREATE_TIMEOUT_SECONDS", 180)) * time.Second,
 		UpstreamQueryTimeout:     time.Duration(getInt("UPSTREAM_QUERY_TIMEOUT_SECONDS", 30)) * time.Second,
+		AssetListBasePages:       getInt("ASSET_LIST_BASE_PAGES", 10),
+		AssetListMediumPages:     getInt("ASSET_LIST_MEDIUM_PAGES", 20),
+		AssetListMaxPages:        getInt("ASSET_LIST_MAX_PAGES", 50),
 		ShutdownTimeout:          time.Duration(getInt("SHUTDOWN_TIMEOUT_SECONDS", 10)) * time.Second,
 	}
 }

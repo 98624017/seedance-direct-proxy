@@ -2,8 +2,10 @@ package seedance
 
 import (
 	"context"
+	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -53,13 +55,37 @@ func TestCreateReturnsWhenUpstreamConnectionFails(t *testing.T) {
 	}
 }
 
-func TestCreateReturnsMediaFetchError(t *testing.T) {
+func TestCreateForwardsFilesWithoutFetching(t *testing.T) {
+	var upstreamFileValue string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reader, err := r.MultipartReader()
+		if err != nil {
+			t.Fatalf("MultipartReader() error = %v", err)
+		}
+		for {
+			part, err := reader.NextPart()
+			if err != nil {
+				break
+			}
+			if part.FormName() != "files" {
+				continue
+			}
+			if part.FileName() != "" {
+				t.Fatalf("files part filename = %q, want text field", part.FileName())
+			}
+			buf, _ := io.ReadAll(part)
+			upstreamFileValue = string(buf)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"message":"请求成功","data":{"Id":88},"success":true}`))
+	}))
+	defer upstream.Close()
+
 	client := Client{
 		HTTPClient: &http.Client{Timeout: 2 * time.Second},
 		Config: config.Config{
-			UpstreamBaseURL:       "http://127.0.0.1:1",
+			UpstreamBaseURL:       upstream.URL,
 			UpstreamCreateTimeout: 2 * time.Second,
-			MediaFetchTimeout:     time.Second,
 		},
 	}
 	req := openai.CreateRequest{
@@ -73,8 +99,10 @@ func TestCreateReturnsMediaFetchError(t *testing.T) {
 		Resolution:    "480p",
 	}
 
-	_, err := client.Create(context.Background(), req, "token")
-	if err == nil {
-		t.Fatalf("Create() expected media URL error")
+	if _, err := client.Create(context.Background(), req, "token"); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if upstreamFileValue != "file:///not-supported.jpg" {
+		t.Fatalf("upstream file value = %q", upstreamFileValue)
 	}
 }

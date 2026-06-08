@@ -3,8 +3,12 @@ package openai
 import (
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/url"
 	"strings"
 )
+
+const AssetModel = "seedance-asset"
 
 var ReferenceFieldOrder = []string{
 	"images",
@@ -37,6 +41,8 @@ type VideoResponse struct {
 	Model     string         `json:"model,omitempty"`
 	Status    string         `json:"status"`
 	Progress  int            `json:"progress"`
+	AssetID   string         `json:"asset_id,omitempty"`
+	AssetURI  string         `json:"asset_uri,omitempty"`
 	CreatedAt int64          `json:"created_at,omitempty"`
 	UpdatedAt int64          `json:"updated_at,omitempty"`
 	URL       string         `json:"url,omitempty"`
@@ -48,6 +54,14 @@ type VideoResponse struct {
 type ErrorDetail struct {
 	Code    string `json:"code,omitempty"`
 	Message string `json:"message"`
+}
+
+type AssetRequest struct {
+	Model             string
+	Name              string
+	ImageURL          string
+	IgnoredImageCount int
+	Raw               map[string]any
 }
 
 func ParseCreateRequest(body []byte) (CreateRequest, error) {
@@ -95,6 +109,156 @@ func ParseCreateRequest(body []byte) (CreateRequest, error) {
 		Resolution:    resolution,
 		Raw:           raw,
 	}, nil
+}
+
+func ModelFromBody(body []byte) string {
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return ""
+	}
+	return stringValue(raw["model"])
+}
+
+func IsAssetModel(model string) bool {
+	return strings.TrimSpace(model) == AssetModel
+}
+
+func ParseAssetRequest(body []byte) (AssetRequest, error) {
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return AssetRequest{}, fmt.Errorf("invalid JSON body")
+	}
+
+	model := stringValue(raw["model"])
+	if model == "" {
+		return AssetRequest{}, fmt.Errorf("model is required")
+	}
+	if !IsAssetModel(model) {
+		return AssetRequest{}, fmt.Errorf("model is not an asset model")
+	}
+
+	name := stringValue(raw["prompt"])
+	if name == "" {
+		return AssetRequest{}, fmt.Errorf("prompt is required")
+	}
+
+	imageURL, ignored := firstAssetImageURL(raw)
+	if imageURL == "" {
+		return AssetRequest{}, fmt.Errorf("image url is required")
+	}
+	if err := ValidatePublicHTTPURL(imageURL); err != nil {
+		return AssetRequest{}, err
+	}
+
+	return AssetRequest{
+		Model:             model,
+		Name:              name,
+		ImageURL:          imageURL,
+		IgnoredImageCount: ignored,
+		Raw:               raw,
+	}, nil
+}
+
+func ParseAssetTaskUnix(taskID string) int64 {
+	parts := strings.Split(taskID, "_")
+	if len(parts) < 4 || parts[0] != "asset" || parts[1] != "req" {
+		return 0
+	}
+	var ts int64
+	_, _ = fmt.Sscanf(parts[2], "%d", &ts)
+	return ts
+}
+
+func ValidateAssetTaskID(taskID string) error {
+	parts := strings.Split(strings.TrimSpace(taskID), "_")
+	if len(parts) != 4 || parts[0] != "asset" || parts[1] != "req" {
+		return fmt.Errorf("asset task id must use asset_req_<unix>_<12 lowercase hex chars>")
+	}
+	if parts[2] == "" || len(parts[3]) != 12 {
+		return fmt.Errorf("asset task id must use asset_req_<unix>_<12 lowercase hex chars>")
+	}
+	for _, r := range parts[2] {
+		if r < '0' || r > '9' {
+			return fmt.Errorf("asset task timestamp must be numeric")
+		}
+	}
+	for _, r := range parts[3] {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+			return fmt.Errorf("asset task random suffix must be lowercase hex")
+		}
+	}
+	if ParseAssetTaskUnix(taskID) <= 0 {
+		return fmt.Errorf("asset task timestamp must be positive")
+	}
+	return nil
+}
+
+func firstAssetImageURL(raw map[string]any) (string, int) {
+	candidates := make([]string, 0)
+	for _, key := range []string{"input_reference", "image", "images", "files"} {
+		appendAssetImageValues(&candidates, raw[key])
+	}
+	for i, candidate := range candidates {
+		if candidate != "" {
+			return candidate, len(candidates) - i - 1
+		}
+	}
+	return "", 0
+}
+
+func appendAssetImageValues(out *[]string, value any) {
+	switch v := value.(type) {
+	case string:
+		if s := strings.TrimSpace(v); s != "" {
+			*out = append(*out, s)
+		}
+	case []any:
+		for _, item := range v {
+			appendAssetImageValues(out, item)
+		}
+	case map[string]any:
+		if s := stringValue(v["url"]); s != "" {
+			*out = append(*out, s)
+			return
+		}
+		if nested, ok := v["image_url"]; ok {
+			appendAssetImageValues(out, nested)
+		}
+	}
+}
+
+func ValidatePublicHTTPURL(raw string) error {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return fmt.Errorf("image url must be a public http or https URL")
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return fmt.Errorf("image url must be a public http or https URL")
+	}
+	host := strings.TrimSpace(parsed.Hostname())
+	if host == "" {
+		return fmt.Errorf("image url host is required")
+	}
+	lowerHost := strings.ToLower(strings.TrimSuffix(host, "."))
+	if lowerHost == "localhost" || strings.HasSuffix(lowerHost, ".localhost") {
+		return fmt.Errorf("image url host is not allowed")
+	}
+	if strings.Contains(lowerHost, "%") {
+		return fmt.Errorf("image url host is not allowed")
+	}
+	if ip := net.ParseIP(lowerHost); ip != nil && isBlockedIP(ip) {
+		return fmt.Errorf("image url host is not allowed")
+	}
+	return nil
+}
+
+func isBlockedIP(ip net.IP) bool {
+	return ip.IsLoopback() ||
+		ip.IsPrivate() ||
+		ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() ||
+		ip.IsUnspecified()
 }
 
 func normalizeModelAndResolution(model, resolution string) (string, string) {
