@@ -56,6 +56,14 @@ type ErrorDetail struct {
 	Message string `json:"message"`
 }
 
+type ValidationError struct {
+	Message string
+}
+
+func (e ValidationError) Error() string {
+	return e.Message
+}
+
 type AssetRequest struct {
 	Model             string
 	Name              string

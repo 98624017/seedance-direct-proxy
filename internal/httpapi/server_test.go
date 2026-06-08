@@ -302,8 +302,11 @@ func TestCreateAssetUsesAssetUpstreamResourcesAPI(t *testing.T) {
 		t.Fatalf("OssPath = %#v", upstreamPayload["OssPath"])
 	}
 	name, _ := upstreamPayload["Name"].(string)
-	if !strings.HasPrefix(name, "林春芽__asset_req_1780830000_") {
+	if !strings.HasPrefix(name, "林春芽__ar_") {
 		t.Fatalf("Name = %q", name)
+	}
+	if len([]rune(name)) != len([]rune("林春芽"))+len("__ar_")+12 {
+		t.Fatalf("Name length = %d, Name = %q", len([]rune(name)), name)
 	}
 
 	var parsed map[string]any
@@ -316,6 +319,88 @@ func TestCreateAssetUsesAssetUpstreamResourcesAPI(t *testing.T) {
 	metadata := parsed["metadata"].(map[string]any)["seedance"].(map[string]any)
 	if metadata["ignored_image_count"].(float64) != 1 {
 		t.Fatalf("metadata = %#v", metadata)
+	}
+}
+
+func TestCreateAssetRejectsNameThatWouldExceedUpstreamLimit(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("too long asset name should not call upstream path %s", r.URL.Path)
+	}))
+	defer upstream.Close()
+
+	cfg := config.Config{
+		UpstreamBaseURL:       upstream.URL,
+		AssetUpstreamBaseURL:  upstream.URL,
+		UpstreamCreateTimeout: 30 * time.Second,
+	}
+	api := Server{
+		Config: cfg,
+		Client: seedance.Client{
+			HTTPClient: http.DefaultClient,
+			Config:     cfg,
+			Now:        func() time.Time { return time.Unix(1780830000, 0) },
+		},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/videos", strings.NewReader(`{
+		"model":"seedance-asset",
+		"prompt":"一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一",
+		"input_reference":"https://asset.test/person.jpg"
+	}`))
+	req.Header.Set("Authorization", "Bearer seedance-token")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	api.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "asset name is too long, max 33 characters") {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+}
+
+func TestCreateAssetAllowsMaximumDisplayNameLength(t *testing.T) {
+	var upstreamPayload map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&upstreamPayload); err != nil {
+			t.Fatalf("decode upstream payload: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"message":"请求成功","data":{},"success":true}`))
+	}))
+	defer upstream.Close()
+
+	cfg := config.Config{
+		UpstreamBaseURL:       upstream.URL,
+		AssetUpstreamBaseURL:  upstream.URL,
+		UpstreamCreateTimeout: 30 * time.Second,
+	}
+	api := Server{
+		Config: cfg,
+		Client: seedance.Client{
+			HTTPClient: http.DefaultClient,
+			Config:     cfg,
+			Now:        func() time.Time { return time.Unix(1780830000, 0) },
+		},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/videos", strings.NewReader(`{
+		"model":"seedance-asset",
+		"prompt":"一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一",
+		"input_reference":"https://asset.test/person.jpg"
+	}`))
+	req.Header.Set("Authorization", "Bearer seedance-token")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	api.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	name, _ := upstreamPayload["Name"].(string)
+	if got := len([]rune(name)); got != 50 {
+		t.Fatalf("upstream name length = %d, name=%q", got, name)
 	}
 }
 
@@ -343,7 +428,7 @@ func TestQueryAssetReturnsAssetID(t *testing.T) {
 					"Id":11,
 					"CreatedAt":"2026-06-03T21:55:05+08:00",
 					"UpdatedAt":"2026-06-03T21:56:05+08:00",
-					"Name":"林春芽__asset_req_1780830000_abcdef123456",
+					"Name":"林春芽__ar_abcdef123456",
 					"OssPath":"https://asset.test/person.jpg",
 					"Status":1,
 					"StatusText":"处理成功",
@@ -400,11 +485,11 @@ func TestQueryAssetMatchesOnlyTraceSuffix(t *testing.T) {
 			"data":{
 				"data":[{
 					"Id":99,
-					"Name":"错误命中 asset_req_1780830000_abcdef123456 但不是追踪后缀",
+					"Name":"错误命中 ar_abcdef123456 但不是追踪后缀",
 					"AssetId":"asset-wrong"
 				},{
 					"Id":123,
-					"Name":"林春芽__asset_req_1780830000_abcdef123456",
+					"Name":"林春芽__ar_abcdef123456",
 					"AssetId":"asset-123"
 				}],
 				"total":2
@@ -541,11 +626,11 @@ func TestTokenAssetDeleteFindsResourceAndDeletesByTaskID(t *testing.T) {
 				"data":{
 					"data":[{
 						"Id":99,
-						"Name":"错误命中 asset_req_1780830000_abcdef123456 但不是追踪后缀",
+						"Name":"错误命中 ar_abcdef123456 但不是追踪后缀",
 						"AssetId":"asset-wrong"
 					},{
 						"Id":123,
-						"Name":"林春芽__asset_req_1780830000_abcdef123456",
+						"Name":"林春芽__ar_abcdef123456",
 						"AssetId":"asset-123"
 					}],
 					"total":1

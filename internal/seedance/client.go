@@ -142,6 +142,11 @@ func (c Client) CreateAsset(ctx context.Context, req openai.AssetRequest, token 
 		return openai.VideoResponse{}, err
 	}
 	upstreamName := assetUpstreamName(req.Name, taskID)
+	if assetUpstreamNameLength(upstreamName) > maxAssetUpstreamNameChars {
+		return openai.VideoResponse{}, openai.ValidationError{
+			Message: fmt.Sprintf("asset name is too long, max %d characters", maxAssetDisplayNameChars),
+		}
+	}
 	payload := map[string]any{
 		"Name":    upstreamName,
 		"OssPath": req.ImageURL,
@@ -430,12 +435,34 @@ func assetTaskID(now time.Time) (string, error) {
 	return fmt.Sprintf("asset_req_%d_%x", now.Unix(), buf), nil
 }
 
+const (
+	assetTracePrefix          = "__ar_"
+	maxAssetUpstreamNameChars = 50
+	maxAssetDisplayNameChars  = maxAssetUpstreamNameChars - len(assetTracePrefix) - 12
+)
+
 func assetUpstreamName(name, taskID string) string {
-	return strings.TrimSpace(name) + "__" + taskID
+	return strings.TrimSpace(name) + assetTraceSuffix(taskID)
 }
 
 func assetResourceNameMatchesTask(name, taskID string) bool {
-	return strings.HasSuffix(strings.TrimSpace(name), "__"+taskID)
+	return strings.HasSuffix(strings.TrimSpace(name), assetTraceSuffix(taskID))
+}
+
+func assetTraceSuffix(taskID string) string {
+	return assetTracePrefix + assetTaskRandomSuffix(taskID)
+}
+
+func assetTaskRandomSuffix(taskID string) string {
+	parts := strings.Split(strings.TrimSpace(taskID), "_")
+	if len(parts) != 4 {
+		return ""
+	}
+	return parts[3]
+}
+
+func assetUpstreamNameLength(name string) int {
+	return len([]rune(strings.TrimSpace(name)))
 }
 
 func assetMetadata(seedance map[string]any) map[string]any {

@@ -254,8 +254,7 @@ func assetResourceFailed(message, statusText string) bool {
 }
 
 func stripAssetTraceSuffix(name string) string {
-	const marker = "__asset_req_"
-	idx := strings.LastIndex(name, marker)
+	idx := strings.LastIndex(name, assetTracePrefix)
 	if idx < 0 {
 		return strings.TrimSpace(name)
 	}

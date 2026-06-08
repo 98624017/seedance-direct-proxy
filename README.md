@@ -271,6 +271,8 @@ curl -X POST 'http://127.0.0.1:3000/v1/videos' \
 
 创建真人形象资产任务时，代理仍调用资产库 `/resources/user/Resources`，把图片 URL 写入 JSON 字段 `OssPath`。资产查询成功后，`asset_id` 是上游原始资产 ID，`asset_uri` 是可直接放进视频生成 `files` 的 `asset://...` 地址。
 
+资产显示名来自请求里的 `prompt`，最多 33 个 Unicode 字符。代理会在上游资源名后追加短追踪后缀 `__ar_<12位hex>`，确保完整上游 `Name` 不超过资产库 50 字符限制。
+
 删除真人形象资产资源时，使用 `POST /api/task/token/asset/delete` 并传 `task_id`。代理会先按任务 ID 查询资产库资源，再调用资产库 `/resourcesapi/user/Resources` 删除真实资源。
 
 注意：视频生成接口和资产库接口不在同一个上游 host。视频生成使用 `UPSTREAM_BASE_URL`，资产创建/查询使用 `ASSET_UPSTREAM_BASE_URL`；如果未配置，资产库默认使用 `http://119.45.42.208:8620`。

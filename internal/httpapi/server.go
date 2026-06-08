@@ -201,6 +201,11 @@ func (s Server) handleTokenAssetDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s Server) writeUpstreamError(w http.ResponseWriter, err error) {
+	var validation openai.ValidationError
+	if errors.As(err, &validation) {
+		writeError(w, http.StatusBadRequest, validation.Error(), nil)
+		return
+	}
 	var upstream seedance.UpstreamError
 	if errors.As(err, &upstream) {
 		status := upstream.StatusCode
