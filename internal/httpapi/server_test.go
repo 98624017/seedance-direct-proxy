@@ -637,7 +637,7 @@ func TestTokenAssetDeleteFindsResourceAndDeletesByTaskID(t *testing.T) {
 				},
 				"success":true
 			}`))
-		case "/resourcesapi/user/Resources":
+		case "/resources/user/Resources":
 			if r.Method != http.MethodDelete {
 				t.Fatalf("delete method = %s, want DELETE", r.Method)
 			}

@@ -64,7 +64,7 @@ Content-Type: application/json
 }
 ```
 
-这个接口用于兼容 NewAPI 的上游动作接口。代理按 `task_id` 查询资产库资源，再调用资产库 `DELETE /resourcesapi/user/Resources` 删除真实资源。下游用户权限判断应由 NewAPI 完成，不要把这个代理接口直接暴露给最终用户。
+这个接口用于兼容 NewAPI 的上游动作接口。代理按 `task_id` 查询资产库资源，再调用资产库 `DELETE /resources/user/Resources` 删除真实资源。下游用户权限判断应由 NewAPI 完成，不要把这个代理接口直接暴露给最终用户。
 
 健康检查：
 
@@ -273,6 +273,6 @@ curl -X POST 'http://127.0.0.1:3000/v1/videos' \
 
 资产显示名来自请求里的 `prompt`，最多 33 个 Unicode 字符。代理会在上游资源名后追加短追踪后缀 `__ar_<12位hex>`，确保完整上游 `Name` 不超过资产库 50 字符限制。
 
-删除真人形象资产资源时，使用 `POST /api/task/token/asset/delete` 并传 `task_id`。代理会先按任务 ID 查询资产库资源，再调用资产库 `/resourcesapi/user/Resources` 删除真实资源。
+删除真人形象资产资源时，使用 `POST /api/task/token/asset/delete` 并传 `task_id`。代理会先按任务 ID 查询资产库资源，再调用资产库 `/resources/user/Resources` 删除真实资源。
 
 注意：视频生成接口和资产库接口不在同一个上游 host。视频生成使用 `UPSTREAM_BASE_URL`，资产创建/查询使用 `ASSET_UPSTREAM_BASE_URL`；如果未配置，资产库默认使用 `http://119.45.42.208:8620`。

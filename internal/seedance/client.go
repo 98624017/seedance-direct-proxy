@@ -242,7 +242,7 @@ func (c Client) deleteAssetResource(ctx context.Context, resourceID int64, token
 	client := c.httpClient()
 	payload := map[string]int64{"Id": resourceID}
 	body, _ := json.Marshal(payload)
-	upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.assetUpstreamBaseURL()+"/resourcesapi/user/Resources", bytes.NewReader(body))
+	upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.assetUpstreamBaseURL()+"/resources/user/Resources", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
