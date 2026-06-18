@@ -16,7 +16,25 @@ import (
 func TestCreateForwardsFileURLsToSeedanceAndPreservesOrder(t *testing.T) {
 	var upstreamModel string
 	var upstreamFiles []string
+	var upstreamFileNames []string
+	var upstreamFileTypes []string
+	var upstreamFileFormNames []string
 	var upstreamToken string
+
+	mediaBodies := map[string]string{
+		"/1.jpg": "image-one",
+		"/2.jpg": "image-two",
+		"/3.jpg": "image-three",
+	}
+	media := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, ok := mediaBodies[r.URL.Path]
+		if !ok {
+			t.Fatalf("unexpected media path %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer media.Close()
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/seedanceapi/common/File/All" {
@@ -37,9 +55,9 @@ func TestCreateForwardsFileURLsToSeedanceAndPreservesOrder(t *testing.T) {
 				buf, _ := io.ReadAll(part)
 				upstreamModel = string(buf)
 			case "files":
-				if part.FileName() != "" {
-					t.Fatalf("files part filename = %q, want empty text field", part.FileName())
-				}
+				upstreamFileFormNames = append(upstreamFileFormNames, part.FormName())
+				upstreamFileNames = append(upstreamFileNames, part.FileName())
+				upstreamFileTypes = append(upstreamFileTypes, part.Header.Get("Content-Type"))
 				buf, _ := io.ReadAll(part)
 				upstreamFiles = append(upstreamFiles, string(buf))
 			}
@@ -82,7 +100,7 @@ func TestCreateForwardsFileURLsToSeedanceAndPreservesOrder(t *testing.T) {
 		"prompt":"test",
 		"duration":"4",
 		"aspect_ratio":"16:9",
-		"files":["https://asset.test/1.jpg","asset://asset-2","https://asset.test/3.jpg"]
+		"files":["` + media.URL + `/1.jpg","asset://asset-2","` + media.URL + `/3.jpg"]
 	}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/videos", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer http://ignored.example|seedance-token")
@@ -100,13 +118,26 @@ func TestCreateForwardsFileURLsToSeedanceAndPreservesOrder(t *testing.T) {
 	if upstreamModel != "veofast" {
 		t.Fatalf("upstream model = %q", upstreamModel)
 	}
-	wantFiles := []string{"https://asset.test/1.jpg", "asset://asset-2", "https://asset.test/3.jpg"}
+	wantFiles := []string{"image-one", "asset://asset-2", "image-three"}
 	if len(upstreamFiles) != len(wantFiles) {
 		t.Fatalf("files len = %d, want %d: %#v", len(upstreamFiles), len(wantFiles), upstreamFiles)
 	}
 	for i := range wantFiles {
 		if upstreamFiles[i] != wantFiles[i] {
 			t.Fatalf("file[%d] = %q, want %q", i, upstreamFiles[i], wantFiles[i])
+		}
+	}
+	wantNames := []string{"1.jpg", "", "3.jpg"}
+	wantTypes := []string{"image/jpeg", "", "image/jpeg"}
+	for i := range wantNames {
+		if upstreamFileFormNames[i] != "files" {
+			t.Fatalf("formName[%d] = %q", i, upstreamFileFormNames[i])
+		}
+		if upstreamFileNames[i] != wantNames[i] {
+			t.Fatalf("filename[%d] = %q, want %q", i, upstreamFileNames[i], wantNames[i])
+		}
+		if upstreamFileTypes[i] != wantTypes[i] {
+			t.Fatalf("content-type[%d] = %q, want %q", i, upstreamFileTypes[i], wantTypes[i])
 		}
 	}
 

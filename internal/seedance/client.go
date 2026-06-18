@@ -8,13 +8,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"mime/multipart"
 	"net/http"
+	"net/textproto"
+	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/98624017/seedance-direct-proxy/internal/config"
+	"github.com/98624017/seedance-direct-proxy/internal/mediafetch"
 	"github.com/98624017/seedance-direct-proxy/internal/openai"
 )
 
@@ -372,17 +377,114 @@ func (c Client) writeMultipart(ctx context.Context, writer *multipart.Writer, re
 		return nil
 	}
 
-	for _, file := range req.Files {
+	return c.writeFileParts(ctx, writer, req.Files)
+}
+
+func (c Client) writeFileParts(ctx context.Context, writer *multipart.Writer, files []string) error {
+	httpURLs := make([]string, 0, len(files))
+	resultIndexes := make(map[int]int, len(files))
+	for i, file := range files {
+		if isHTTPReference(file) {
+			resultIndexes[i] = len(httpURLs)
+			httpURLs = append(httpURLs, strings.TrimSpace(file))
+		}
+	}
+
+	var results []<-chan mediafetch.Result
+	cancel := func() {}
+	if len(httpURLs) > 0 {
+		fetcher := mediafetch.Fetcher{
+			Client:              c.httpClient(),
+			Timeout:             c.Config.MediaFetchTimeout,
+			MaxSingleMediaBytes: c.Config.MaxSingleMediaBytes,
+			MaxTotalMediaBytes:  c.Config.MaxTotalMediaBytes,
+			PrefetchConcurrency: c.Config.MediaPrefetchConcurrency,
+		}
+		var err error
+		results, cancel, err = fetcher.Start(ctx, httpURLs)
+		if err != nil {
+			return err
+		}
+	}
+	defer cancel()
+
+	var total int64
+	var totalMu sync.Mutex
+	for i, file := range files {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
 		}
-		if err := writer.WriteField("files", file); err != nil {
+
+		resultIndex, ok := resultIndexes[i]
+		if !ok {
+			if err := writer.WriteField("files", file); err != nil {
+				return err
+			}
+			continue
+		}
+
+		ch := results[resultIndex]
+		result, ok := <-ch
+		if !ok {
+			return ctx.Err()
+		}
+		if result.Err != nil {
+			return fmt.Errorf("fetch reference file %d: %w", i+1, result.Err)
+		}
+		if result.Body == nil {
+			return fmt.Errorf("fetch reference file %d: empty response body", i+1)
+		}
+		if err := c.writeSingleFilePart(writer, result, &total, &totalMu); err != nil {
+			_ = result.Body.Close()
 			return err
 		}
 	}
 	return nil
+}
+
+func isHTTPReference(raw string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed == nil {
+		return false
+	}
+	return (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host != ""
+}
+
+func (c Client) writeSingleFilePart(writer *multipart.Writer, result mediafetch.Result, total *int64, totalMu *sync.Mutex) error {
+	defer result.Body.Close()
+
+	part, err := writer.CreatePart(filePartHeader(result))
+	if err != nil {
+		return err
+	}
+	reader := &mediafetch.CountingReader{
+		Reader:     result.Body,
+		MaxSingle:  c.Config.MaxSingleMediaBytes,
+		MaxTotal:   c.Config.MaxTotalMediaBytes,
+		Total:      total,
+		TotalMu:    totalMu,
+		SingleRead: 0,
+	}
+	if _, err := io.Copy(part, reader); err != nil {
+		return err
+	}
+	return nil
+}
+
+func filePartHeader(result mediafetch.Result) textproto.MIMEHeader {
+	header := make(textproto.MIMEHeader)
+	header.Set("Content-Disposition", mime.FormatMediaType("form-data", map[string]string{
+		"name":     "files",
+		"filename": result.Filename,
+	}))
+	if result.ContentType != "" {
+		header.Set("Content-Type", result.ContentType)
+	} else {
+		header.Set("Content-Type", "application/octet-stream")
+	}
+	return header
 }
 
 func (c Client) httpClient() *http.Client {

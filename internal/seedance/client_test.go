@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -55,8 +56,21 @@ func TestCreateReturnsWhenUpstreamConnectionFails(t *testing.T) {
 	}
 }
 
-func TestCreateForwardsFilesWithoutFetching(t *testing.T) {
-	var upstreamFileValue string
+func TestCreateStreamsFileURLsAsMultipartFileParts(t *testing.T) {
+	mediaBody := "seedance-media-body"
+	media := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Accept") != "image/*, video/*, audio/*, application/octet-stream" {
+			t.Fatalf("media Accept = %q", r.Header.Get("Accept"))
+		}
+		w.Header().Set("Content-Type", "image/jpeg")
+		w.Header().Set("Content-Length", strconv.Itoa(len(mediaBody)))
+		_, _ = w.Write([]byte(mediaBody))
+	}))
+	defer media.Close()
+
+	var upstreamFilename string
+	var upstreamContentType string
+	var upstreamFileBody string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reader, err := r.MultipartReader()
 		if err != nil {
@@ -70,11 +84,10 @@ func TestCreateForwardsFilesWithoutFetching(t *testing.T) {
 			if part.FormName() != "files" {
 				continue
 			}
-			if part.FileName() != "" {
-				t.Fatalf("files part filename = %q, want text field", part.FileName())
-			}
+			upstreamFilename = part.FileName()
+			upstreamContentType = part.Header.Get("Content-Type")
 			buf, _ := io.ReadAll(part)
-			upstreamFileValue = string(buf)
+			upstreamFileBody = string(buf)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"code":0,"message":"请求成功","data":{"Id":88},"success":true}`))
@@ -82,10 +95,14 @@ func TestCreateForwardsFilesWithoutFetching(t *testing.T) {
 	defer upstream.Close()
 
 	client := Client{
-		HTTPClient: &http.Client{Timeout: 2 * time.Second},
+		HTTPClient: media.Client(),
 		Config: config.Config{
-			UpstreamBaseURL:       upstream.URL,
-			UpstreamCreateTimeout: 2 * time.Second,
+			UpstreamBaseURL:          upstream.URL,
+			UpstreamCreateTimeout:    2 * time.Second,
+			MediaFetchTimeout:        time.Second,
+			MediaPrefetchConcurrency: 1,
+			MaxSingleMediaBytes:      1024,
+			MaxTotalMediaBytes:       1024,
 		},
 	}
 	req := openai.CreateRequest{
@@ -93,7 +110,7 @@ func TestCreateForwardsFilesWithoutFetching(t *testing.T) {
 		Prompt:        "test",
 		Duration:      "4",
 		AspectRatio:   "16:9",
-		Files:         []string{"file:///not-supported.jpg"},
+		Files:         []string{media.URL + "/ref.jpg"},
 		GenerateAudio: "true",
 		Watermark:     "false",
 		Resolution:    "480p",
@@ -102,7 +119,13 @@ func TestCreateForwardsFilesWithoutFetching(t *testing.T) {
 	if _, err := client.Create(context.Background(), req, "token"); err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
-	if upstreamFileValue != "file:///not-supported.jpg" {
-		t.Fatalf("upstream file value = %q", upstreamFileValue)
+	if upstreamFilename != "ref.jpg" {
+		t.Fatalf("upstream filename = %q", upstreamFilename)
+	}
+	if upstreamContentType != "image/jpeg" {
+		t.Fatalf("upstream content type = %q", upstreamContentType)
+	}
+	if upstreamFileBody != mediaBody {
+		t.Fatalf("upstream file body = %q", upstreamFileBody)
 	}
 }

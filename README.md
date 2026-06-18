@@ -99,7 +99,7 @@ GET /healthz
 images, image, input_reference, input_video, video_url, reference_video, audio, audios
 ```
 
-这些字段最终都会作为上游 multipart `files` 文本字段直接转发，支持公网 URL 和上游资源库地址 `asset://资产id`。代理不再先下载素材再以二进制文件上传。
+这些字段最终都会进入上游 multipart `files`。公网 `http://` / `https://` URL 会由代理下载后作为文件 part 上传；上游资源库地址 `asset://资产id` 会按原值作为文本字段透传。
 
 ## 模型
 
@@ -148,6 +148,10 @@ doubao-seedance-2-0-260128-3
 | `UPSTREAM_BASE_URL` | `http://119.45.252.34:8618` |
 | `ASSET_UPSTREAM_BASE_URL` | `http://119.45.42.208:8620` |
 | `MAX_REFERENCE_FILES` | `12` |
+| `MAX_SINGLE_MEDIA_BYTES` | `52428800` |
+| `MAX_TOTAL_MEDIA_BYTES` | `209715200` |
+| `MEDIA_PREFETCH_CONCURRENCY` | `6` |
+| `MEDIA_FETCH_TIMEOUT_SECONDS` | `75` |
 | `UPSTREAM_CREATE_TIMEOUT_SECONDS` | `180` |
 | `UPSTREAM_QUERY_TIMEOUT_SECONDS` | `30` |
 | `ASSET_LIST_BASE_PAGES` | `10` |
@@ -185,7 +189,7 @@ docker run --rm -p 3000:3000 ghcr.io/98624017/seedance-direct-proxy:latest
 镜像由仓库根目录的 GitHub Actions workflow 构建：
 
 ```text
-.github/workflows/seedance-direct-proxy-ghcr.yml
+.github/workflows/ghcr.yml
 ```
 
 ## NewAPI 配置
@@ -267,7 +271,7 @@ curl -X POST 'http://127.0.0.1:3000/v1/videos' \
 
 ## 转发说明
 
-创建视频任务时，代理只构造 multipart 表单并把 `files` 的值按原顺序写给上游；素材下载、资源库地址解析和可访问性校验由 Seedance 上游负责。
+创建视频任务时，代理会按输入顺序构造 multipart 表单：公网 `http://` / `https://` URL 会先下载并作为文件 part 上传，`asset://...` 资源库地址会作为文本 `files` 字段透传。
 
 创建真人形象资产任务时，代理仍调用资产库 `/resources/user/Resources`，把图片 URL 写入 JSON 字段 `OssPath`。资产查询成功后，`asset_id` 是上游原始资产 ID，`asset_uri` 是可直接放进视频生成 `files` 的 `asset://...` 地址。
 

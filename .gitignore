@@ -1,3 +1,4 @@
 /seedance-direct-proxy
 /*.test
 /coverage.out
+/.tmp/
