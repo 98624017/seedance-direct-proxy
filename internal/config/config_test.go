@@ -29,3 +29,16 @@ func TestLoadAllowsOverridingAssetUpstreamBaseURL(t *testing.T) {
 		t.Fatalf("unexpected asset upstream base URL: %q", cfg.AssetUpstreamBaseURL)
 	}
 }
+
+func TestLoadParsesAssetUpstreamTokens(t *testing.T) {
+	t.Setenv("ASSET_UPSTREAM_TOKENS", " token-a , token-b ,, token-c ")
+
+	cfg := Load()
+
+	if len(cfg.AssetUpstreamTokens) != 3 {
+		t.Fatalf("unexpected token count: %#v", cfg.AssetUpstreamTokens)
+	}
+	if cfg.AssetUpstreamTokens[0] != "token-a" || cfg.AssetUpstreamTokens[1] != "token-b" || cfg.AssetUpstreamTokens[2] != "token-c" {
+		t.Fatalf("unexpected tokens: %#v", cfg.AssetUpstreamTokens)
+	}
+}

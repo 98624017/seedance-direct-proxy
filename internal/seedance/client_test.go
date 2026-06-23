@@ -2,6 +2,7 @@ package seedance
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -127,5 +128,115 @@ func TestCreateStreamsFileURLsAsMultipartFileParts(t *testing.T) {
 	}
 	if upstreamFileBody != mediaBody {
 		t.Fatalf("upstream file body = %q", upstreamFileBody)
+	}
+}
+
+func TestQueryAssetFallsBackToConfiguredTokens(t *testing.T) {
+	var calls []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.Header.Get("token"))
+		if len(calls) == 1 {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"message":"bad token"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"message":"请求成功","data":{"data":[{"Id":11,"Name":"林春芽__ar_abcdef123456","AssetId":"asset-11","Status":1,"StatusText":"处理成功"}],"total":1},"success":true}`))
+	}))
+	defer upstream.Close()
+
+	client := Client{
+		HTTPClient: upstream.Client(),
+		Config: config.Config{
+			AssetUpstreamBaseURL: upstream.URL,
+			AssetListBasePages:   1,
+			AssetUpstreamTokens:  []string{"token-b", "token-c"},
+			UpstreamQueryTimeout: time.Second,
+		},
+	}
+
+	resp, err := client.QueryAsset(context.Background(), "asset_req_1700000000_abcdef123456", "token-a")
+	if err != nil {
+		t.Fatalf("QueryAsset error = %v", err)
+	}
+	if resp.AssetID != "asset-11" {
+		t.Fatalf("AssetID = %q", resp.AssetID)
+	}
+	if len(calls) != 2 || calls[0] != "token-a" || calls[1] != "token-b" {
+		t.Fatalf("unexpected token calls: %#v", calls)
+	}
+}
+
+func TestQueryAssetReturnsLastFallbackErrorWhenAllTokensFail(t *testing.T) {
+	calls := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"message":"bad token"}`))
+	}))
+	defer upstream.Close()
+
+	client := Client{
+		HTTPClient: upstream.Client(),
+		Config: config.Config{
+			AssetUpstreamBaseURL: upstream.URL,
+			AssetListBasePages:   1,
+			AssetUpstreamTokens:  []string{"token-b"},
+			UpstreamQueryTimeout: time.Second,
+		},
+	}
+
+	_, err := client.QueryAsset(context.Background(), "asset_req_1700000000_abcdef123456", "token-a")
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	var upstreamErr UpstreamError
+	if !errors.As(err, &upstreamErr) || upstreamErr.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("unexpected calls: %d", calls)
+	}
+}
+
+func TestDeleteAssetFallsBackToConfiguredTokens(t *testing.T) {
+	var calls []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.Method+" "+r.Header.Get("token"))
+		switch len(calls) {
+		case 1:
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"message":"forbidden"}`))
+		case 2:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"code":0,"message":"请求成功","data":{"data":[{"Id":11,"Name":"林春芽__ar_abcdef123456","AssetId":"asset-11","Status":1,"StatusText":"处理成功"}],"total":1},"success":true}`))
+		case 3:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"code":0,"message":"请求成功","data":{},"success":true}`))
+		default:
+			t.Fatalf("unexpected call %d: %s %s", len(calls), r.Method, r.Header.Get("token"))
+		}
+	}))
+	defer upstream.Close()
+
+	client := Client{
+		HTTPClient: upstream.Client(),
+		Config: config.Config{
+			AssetUpstreamBaseURL: upstream.URL,
+			AssetListBasePages:   1,
+			AssetUpstreamTokens:  []string{"token-b"},
+			UpstreamQueryTimeout: time.Second,
+		},
+	}
+
+	deleted, err := client.DeleteAssetByTaskID(context.Background(), "asset_req_1700000000_abcdef123456", "token-a")
+	if err != nil {
+		t.Fatalf("DeleteAssetByTaskID error = %v", err)
+	}
+	if deleted.ResourceID != 11 {
+		t.Fatalf("ResourceID = %d", deleted.ResourceID)
+	}
+	if len(calls) != 3 || calls[0] != "POST token-a" || calls[1] != "POST token-b" || calls[2] != "DELETE token-b" {
+		t.Fatalf("unexpected call sequence: %#v", calls)
 	}
 }

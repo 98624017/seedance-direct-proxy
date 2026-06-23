@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -10,6 +11,7 @@ type Config struct {
 	Port                     string
 	UpstreamBaseURL          string
 	AssetUpstreamBaseURL     string
+	AssetUpstreamTokens      []string
 	MaxReferenceFiles        int
 	MaxSingleMediaBytes      int64
 	MaxTotalMediaBytes       int64
@@ -35,6 +37,7 @@ func Load() Config {
 		Port:                     getString("PORT", "3000"),
 		UpstreamBaseURL:          upstreamBaseURL,
 		AssetUpstreamBaseURL:     assetUpstreamBaseURL,
+		AssetUpstreamTokens:      parseListEnv("ASSET_UPSTREAM_TOKENS"),
 		MaxReferenceFiles:        getInt("MAX_REFERENCE_FILES", 12),
 		MaxSingleMediaBytes:      getInt64("MAX_SINGLE_MEDIA_BYTES", 52428800),
 		MaxTotalMediaBytes:       getInt64("MAX_TOTAL_MEDIA_BYTES", 209715200),
@@ -86,4 +89,19 @@ func trimRightSlash(value string) string {
 		value = value[:len(value)-1]
 	}
 	return value
+}
+
+func parseListEnv(key string) []string {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if value := strings.TrimSpace(part); value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }

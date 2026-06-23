@@ -207,40 +207,77 @@ func (c Client) QueryAsset(ctx context.Context, taskID string, token string) (op
 	ctx, cancel := contextWithOptionalTimeout(ctx, c.Config.UpstreamQueryTimeout)
 	defer cancel()
 
-	item, scannedPages, lastResponse, ok, err := c.findAssetResource(ctx, taskID, token)
-	if err != nil {
-		return openai.VideoResponse{}, err
+	var (
+		lastNotFoundPages int
+		lastNotFoundResp  AssetListResponse
+		lastFallbackErr   error
+		hasNotFoundResp   bool
+	)
+	for _, candidate := range c.assetQueryTokens(token) {
+		item, scannedPages, lastResponse, ok, err := c.findAssetResource(ctx, taskID, candidate)
+		if err != nil {
+			if isAssetTokenFallbackError(err) {
+				lastFallbackErr = err
+				continue
+			}
+			return openai.VideoResponse{}, err
+		}
+		if ok {
+			return NormalizeAssetQuery(taskID, item, scannedPages), nil
+		}
+		lastNotFoundPages = scannedPages
+		lastNotFoundResp = lastResponse
+		hasNotFoundResp = true
 	}
-	if ok {
-		return NormalizeAssetQuery(taskID, item, scannedPages), nil
+	if hasNotFoundResp {
+		return NormalizeAssetNotFound(taskID, lastNotFoundPages, lastNotFoundResp), nil
 	}
-	return NormalizeAssetNotFound(taskID, scannedPages, lastResponse), nil
+	if lastFallbackErr != nil {
+		return openai.VideoResponse{}, lastFallbackErr
+	}
+	return NormalizeAssetNotFound(taskID, 0, AssetListResponse{}), nil
 }
 
 func (c Client) DeleteAssetByTaskID(ctx context.Context, taskID string, token string) (DeletedAsset, error) {
 	ctx, cancel := contextWithOptionalTimeout(ctx, c.Config.UpstreamQueryTimeout)
 	defer cancel()
 
-	item, _, _, ok, err := c.findAssetResource(ctx, taskID, token)
-	if err != nil {
-		return DeletedAsset{}, err
+	var lastErr error
+	for _, candidate := range c.assetQueryTokens(token) {
+		item, _, _, ok, err := c.findAssetResource(ctx, taskID, candidate)
+		if err != nil {
+			if isAssetTokenFallbackError(err) {
+				lastErr = err
+				continue
+			}
+			return DeletedAsset{}, err
+		}
+		if !ok {
+			lastErr = UpstreamError{StatusCode: http.StatusNotFound, Message: "asset resource not found"}
+			continue
+		}
+		if item.ID <= 0 {
+			return DeletedAsset{}, UpstreamError{StatusCode: http.StatusBadGateway, Message: "asset resource id is missing"}
+		}
+		if err := c.deleteAssetResource(ctx, item.ID, candidate); err != nil {
+			if isAssetTokenFallbackError(err) {
+				lastErr = err
+				continue
+			}
+			return DeletedAsset{}, err
+		}
+		assetID := strings.TrimSpace(item.AssetID)
+		return DeletedAsset{
+			TaskID:     taskID,
+			ResourceID: item.ID,
+			AssetID:    assetID,
+			AssetURI:   assetURI(assetID),
+		}, nil
 	}
-	if !ok {
-		return DeletedAsset{}, UpstreamError{StatusCode: http.StatusNotFound, Message: "asset resource not found"}
+	if lastErr != nil {
+		return DeletedAsset{}, lastErr
 	}
-	if item.ID <= 0 {
-		return DeletedAsset{}, UpstreamError{StatusCode: http.StatusBadGateway, Message: "asset resource id is missing"}
-	}
-	if err := c.deleteAssetResource(ctx, item.ID, token); err != nil {
-		return DeletedAsset{}, err
-	}
-	assetID := strings.TrimSpace(item.AssetID)
-	return DeletedAsset{
-		TaskID:     taskID,
-		ResourceID: item.ID,
-		AssetID:    assetID,
-		AssetURI:   assetURI(assetID),
-	}, nil
+	return DeletedAsset{}, UpstreamError{StatusCode: http.StatusNotFound, Message: "asset resource not found"}
 }
 
 func (c Client) deleteAssetResource(ctx context.Context, resourceID int64, token string) error {
@@ -492,6 +529,37 @@ func (c Client) httpClient() *http.Client {
 		return c.HTTPClient
 	}
 	return http.DefaultClient
+}
+
+func (c Client) assetQueryTokens(primary string) []string {
+	tokens := make([]string, 0, 1+len(c.Config.AssetUpstreamTokens))
+	seen := make(map[string]struct{}, 1+len(c.Config.AssetUpstreamTokens))
+	appendToken := func(token string) {
+		token = strings.TrimSpace(token)
+		if token == "" {
+			return
+		}
+		if _, ok := seen[token]; ok {
+			return
+		}
+		seen[token] = struct{}{}
+		tokens = append(tokens, token)
+	}
+	appendToken(primary)
+	for _, token := range c.Config.AssetUpstreamTokens {
+		appendToken(token)
+	}
+	return tokens
+}
+
+func isAssetTokenFallbackError(err error) bool {
+	var upstream UpstreamError
+	if !errors.As(err, &upstream) {
+		return false
+	}
+	return upstream.StatusCode == http.StatusUnauthorized ||
+		upstream.StatusCode == http.StatusForbidden ||
+		upstream.StatusCode == http.StatusNotFound
 }
 
 func (c Client) assetUpstreamBaseURL() string {
