@@ -105,6 +105,7 @@ https://api.light-ai.cloud/v1/videos
 - 不要传本地文件路径、内网 URL、需要登录态的 URL、base64 或 data URL。
 - 真人资产创建返回的是 `asset_id: "asset-xxxx"` 和 `asset_uri: "asset://asset-xxxx"`；视频生成时建议直接传 `asset_uri`。
 - 普通视频生成不需要先把公网 URL 转成资产，公网 URL 可以直接放在 `files` 里。
+- 兼容参考素材字段也接受常见 OpenAI 风格对象，例如 `{"url":"..."}`、`{"image_url":{"url":"..."}}`。
 
 ### 3.4 支持模型
 

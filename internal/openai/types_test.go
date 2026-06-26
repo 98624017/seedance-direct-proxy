@@ -64,6 +64,38 @@ func TestParseCreateRequestPreservesUnmappedModel(t *testing.T) {
 	}
 }
 
+func TestParseCreateRequestCollectsObjectReferences(t *testing.T) {
+	raw := []byte(`{
+		"model":"veofast",
+		"prompt":"test",
+		"images":[
+			{"url":"https://asset.test/image-1.jpg"},
+			{"image_url":{"url":"https://asset.test/image-2.jpg"}}
+		],
+		"input_video":{"video_url":"https://asset.test/ref.mp4"},
+		"audio":{"audio_url":{"url":"https://asset.test/ref.mp3"}}
+	}`)
+	req, err := ParseCreateRequest(raw)
+	if err != nil {
+		t.Fatalf("ParseCreateRequest() error = %v", err)
+	}
+
+	wantFiles := []string{
+		"https://asset.test/image-1.jpg",
+		"https://asset.test/image-2.jpg",
+		"https://asset.test/ref.mp4",
+		"https://asset.test/ref.mp3",
+	}
+	if len(req.Files) != len(wantFiles) {
+		t.Fatalf("files len = %d, want %d: %#v", len(req.Files), len(wantFiles), req.Files)
+	}
+	for i := range wantFiles {
+		if req.Files[i] != wantFiles[i] {
+			t.Fatalf("files[%d] = %q, want %q", i, req.Files[i], wantFiles[i])
+		}
+	}
+}
+
 func TestParseCreateRequestMapsResolutionModelSuffix(t *testing.T) {
 	tests := []struct {
 		name           string

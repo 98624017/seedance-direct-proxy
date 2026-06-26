@@ -236,12 +236,13 @@ func TestUpstreamBusinessFailureReturnsBadGateway(t *testing.T) {
 
 	cfg := config.Config{
 		UpstreamBaseURL:       upstream.URL,
+		MaxReferenceFiles:     12,
 		UpstreamCreateTimeout: 30 * time.Second,
 		UpstreamQueryTimeout:  30 * time.Second,
 	}
 	api := Server{Config: cfg, Client: seedance.Client{HTTPClient: http.DefaultClient, Config: cfg}}
 
-	createReq := httptest.NewRequest(http.MethodPost, "/v1/videos", strings.NewReader(`{"model":"m","prompt":"p"}`))
+	createReq := httptest.NewRequest(http.MethodPost, "/v1/videos", strings.NewReader(`{"model":"m","prompt":"p","files":["asset://asset-1"]}`))
 	createReq.Header.Set("Authorization", "Bearer token")
 	createRec := httptest.NewRecorder()
 	api.Handler().ServeHTTP(createRec, createReq)

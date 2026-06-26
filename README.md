@@ -99,7 +99,7 @@ GET /healthz
 images, image, input_reference, input_video, video_url, reference_video, audio, audios
 ```
 
-这些字段最终都会进入上游 multipart `files`。公网 `http://` / `https://` URL 会由代理下载后作为文件 part 上传；上游资源库地址 `asset://资产id` 会按原值作为文本字段透传。
+这些字段最终都会进入上游 multipart `files`。字段值可以是字符串、字符串数组，或常见 OpenAI 风格对象（例如 `{"url":"..."}`、`{"image_url":{"url":"..."}}`）。公网 `http://` / `https://` URL 会由代理下载后作为文件 part 上传；上游资源库地址 `asset://资产id` 会按原值作为文本字段透传。
 
 ## 模型
 

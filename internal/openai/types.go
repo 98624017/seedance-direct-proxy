@@ -319,20 +319,32 @@ func collectReferenceFiles(raw map[string]any) []string {
 		if !ok {
 			continue
 		}
-		switch v := value.(type) {
-		case string:
-			if s := strings.TrimSpace(v); s != "" {
-				files = append(files, s)
-			}
-		case []any:
-			for _, item := range v {
-				if s := stringValue(item); s != "" {
-					files = append(files, s)
-				}
+		appendReferenceFileValues(&files, value)
+	}
+	return files
+}
+
+func appendReferenceFileValues(out *[]string, value any) {
+	switch v := value.(type) {
+	case string:
+		if s := strings.TrimSpace(v); s != "" {
+			*out = append(*out, s)
+		}
+	case []any:
+		for _, item := range v {
+			appendReferenceFileValues(out, item)
+		}
+	case map[string]any:
+		if s := stringValue(v["url"]); s != "" {
+			*out = append(*out, s)
+			return
+		}
+		for _, key := range []string{"image_url", "video_url", "audio_url", "file_url"} {
+			if nested, ok := v[key]; ok {
+				appendReferenceFileValues(out, nested)
 			}
 		}
 	}
-	return files
 }
 
 func aspectRatioFromSize(size string) string {
