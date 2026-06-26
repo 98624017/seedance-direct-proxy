@@ -9,7 +9,10 @@ import (
 
 type Config struct {
 	Port                     string
+	VideoUpstreamProvider    string
+	VideoUpstreamInvalid     bool
 	UpstreamBaseURL          string
+	JimengUpstreamBaseURL    string
 	AssetUpstreamBaseURL     string
 	AssetUpstreamTokens      []string
 	MaxReferenceFiles        int
@@ -26,16 +29,23 @@ type Config struct {
 }
 
 const (
-	defaultUpstreamBaseURL      = "http://119.45.252.34:8618"
-	defaultAssetUpstreamBaseURL = "http://119.45.42.208:8620"
+	defaultUpstreamBaseURL       = "http://119.45.252.34:8618"
+	defaultJimengUpstreamBaseURL = "https://api.aizhw.cc"
+	defaultAssetUpstreamBaseURL  = "http://119.45.42.208:8620"
 )
 
 func Load() Config {
 	upstreamBaseURL := trimRightSlash(getString("UPSTREAM_BASE_URL", defaultUpstreamBaseURL))
+	jimengUpstreamBaseURL := trimRightSlash(getString("JIMENG_UPSTREAM_BASE_URL", defaultJimengUpstreamBaseURL))
 	assetUpstreamBaseURL := trimRightSlash(getString("ASSET_UPSTREAM_BASE_URL", defaultAssetUpstreamBaseURL))
+	rawProvider := getString("VIDEO_UPSTREAM_PROVIDER", "jimeng")
+	videoProvider, invalidProvider := normalizeVideoUpstreamProvider(rawProvider)
 	return Config{
 		Port:                     getString("PORT", "3000"),
+		VideoUpstreamProvider:    videoProvider,
+		VideoUpstreamInvalid:     invalidProvider,
 		UpstreamBaseURL:          upstreamBaseURL,
+		JimengUpstreamBaseURL:    jimengUpstreamBaseURL,
 		AssetUpstreamBaseURL:     assetUpstreamBaseURL,
 		AssetUpstreamTokens:      parseListEnv("ASSET_UPSTREAM_TOKENS"),
 		MaxReferenceFiles:        getInt("MAX_REFERENCE_FILES", 12),
@@ -49,6 +59,17 @@ func Load() Config {
 		AssetListMediumPages:     getInt("ASSET_LIST_MEDIUM_PAGES", 20),
 		AssetListMaxPages:        getInt("ASSET_LIST_MAX_PAGES", 50),
 		ShutdownTimeout:          time.Duration(getInt("SHUTDOWN_TIMEOUT_SECONDS", 10)) * time.Second,
+	}
+}
+
+func normalizeVideoUpstreamProvider(value string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "jimeng":
+		return "jimeng", false
+	case "legacy":
+		return "legacy", false
+	default:
+		return "jimeng", true
 	}
 }
 

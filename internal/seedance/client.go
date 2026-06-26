@@ -132,6 +132,87 @@ func (c Client) Query(ctx context.Context, taskID int64, token string) (openai.V
 	return NormalizeQuery(out, ""), nil
 }
 
+func (c Client) CreateJimeng(ctx context.Context, req openai.JimengRequest, token string) (openai.VideoResponse, error) {
+	client := c.httpClient()
+	ctx, cancel := contextWithOptionalTimeout(ctx, c.Config.UpstreamCreateTimeout)
+	defer cancel()
+
+	payload := map[string]any{
+		"model":          req.Model,
+		"prompt":         req.Prompt,
+		"resolution":     req.Resolution,
+		"duration":       req.Duration,
+		"reference_mode": req.ReferenceMode,
+	}
+	if strings.TrimSpace(req.Ratio) != "" {
+		payload["ratio"] = req.Ratio
+	}
+	if len(req.FilePaths) > 0 {
+		payload["file_paths"] = req.FilePaths
+	}
+	body, _ := json.Marshal(payload)
+	upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.jimengUpstreamBaseURL()+"/v1/videos/tasks", bytes.NewReader(body))
+	if err != nil {
+		return openai.VideoResponse{}, err
+	}
+	upstreamReq.Header.Set("Content-Type", "application/json")
+	upstreamReq.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := client.Do(upstreamReq)
+	if err != nil {
+		return openai.VideoResponse{}, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return openai.VideoResponse{}, readUpstreamError(resp)
+	}
+
+	var out JimengCreateResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return openai.VideoResponse{}, fmt.Errorf("decode jimeng create response: %w", err)
+	}
+	if strings.TrimSpace(out.TaskID) == "" {
+		return openai.VideoResponse{}, UpstreamError{StatusCode: resp.StatusCode, Message: "jimeng create response missing task_id"}
+	}
+	if strings.TrimSpace(out.Status) == "" {
+		out.Status = "pending"
+	}
+	return NormalizeJimengCreate(out, req.Model), nil
+}
+
+func (c Client) QueryJimeng(ctx context.Context, taskID string, token string) (openai.VideoResponse, error) {
+	client := c.httpClient()
+	ctx, cancel := contextWithOptionalTimeout(ctx, c.Config.UpstreamQueryTimeout)
+	defer cancel()
+
+	upstreamURL := c.jimengUpstreamBaseURL() + "/v1/videos/tasks/" + url.PathEscape(taskID)
+	upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodGet, upstreamURL, nil)
+	if err != nil {
+		return openai.VideoResponse{}, err
+	}
+	upstreamReq.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := client.Do(upstreamReq)
+	if err != nil {
+		return openai.VideoResponse{}, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return openai.VideoResponse{}, readUpstreamError(resp)
+	}
+
+	var out JimengQueryResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return openai.VideoResponse{}, fmt.Errorf("decode jimeng query response: %w", err)
+	}
+	if strings.TrimSpace(out.TaskID) == "" {
+		out.TaskID = taskID
+	}
+	return NormalizeJimengQuery(out), nil
+}
+
 func (c Client) CreateAsset(ctx context.Context, req openai.AssetRequest, token string) (openai.VideoResponse, error) {
 	client := c.httpClient()
 	cfg := c.Config
@@ -567,6 +648,13 @@ func (c Client) assetUpstreamBaseURL() string {
 		return strings.TrimRight(c.Config.AssetUpstreamBaseURL, "/")
 	}
 	return strings.TrimRight(c.Config.UpstreamBaseURL, "/")
+}
+
+func (c Client) jimengUpstreamBaseURL() string {
+	if strings.TrimSpace(c.Config.JimengUpstreamBaseURL) != "" {
+		return strings.TrimRight(c.Config.JimengUpstreamBaseURL, "/")
+	}
+	return "https://api.aizhw.cc"
 }
 
 func readUpstreamError(resp *http.Response) error {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -70,6 +71,17 @@ type AssetRequest struct {
 	ImageURL          string
 	IgnoredImageCount int
 	Raw               map[string]any
+}
+
+type JimengRequest struct {
+	Model         string
+	Prompt        string
+	Ratio         string
+	Resolution    string
+	Duration      float64
+	ReferenceMode string
+	FilePaths     []string
+	Raw           map[string]any
 }
 
 func ParseCreateRequest(body []byte) (CreateRequest, error) {
@@ -167,6 +179,67 @@ func ParseAssetRequest(body []byte) (AssetRequest, error) {
 	}, nil
 }
 
+func ParseJimengRequest(body []byte) (JimengRequest, error) {
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return JimengRequest{}, fmt.Errorf("invalid JSON body")
+	}
+
+	model := stringValue(raw["model"])
+	if model == "" {
+		return JimengRequest{}, fmt.Errorf("model is required")
+	}
+	if IsAssetModel(model) {
+		return JimengRequest{}, fmt.Errorf("seedance-asset is not supported by jimeng upstream; use a video model and pass public image URLs in files")
+	}
+
+	prompt := stringValue(raw["prompt"])
+	if prompt == "" {
+		return JimengRequest{}, fmt.Errorf("prompt is required")
+	}
+
+	files, err := collectJimengFilePaths(raw)
+	if err != nil {
+		return JimengRequest{}, err
+	}
+	referenceMode := stringValue(raw["reference_mode"])
+	if referenceMode == "" {
+		if len(files) > 0 {
+			referenceMode = "omni"
+		} else {
+			referenceMode = "text_to_video"
+		}
+	}
+	if err := validateJimengReferenceMode(referenceMode, len(files)); err != nil {
+		return JimengRequest{}, err
+	}
+
+	duration, err := jimengDuration(raw)
+	if err != nil {
+		return JimengRequest{}, err
+	}
+
+	ratio := stringValue(raw["ratio"])
+	if ratio == "" {
+		ratio = stringValue(raw["aspect_ratio"])
+	}
+	resolution := stringValue(raw["resolution"])
+	if resolution == "" {
+		resolution = "720p"
+	}
+
+	return JimengRequest{
+		Model:         model,
+		Prompt:        prompt,
+		Ratio:         ratio,
+		Resolution:    resolution,
+		Duration:      duration,
+		ReferenceMode: referenceMode,
+		FilePaths:     files,
+		Raw:           raw,
+	}, nil
+}
+
 func ParseAssetTaskUnix(taskID string) int64 {
 	parts := strings.Split(taskID, "_")
 	if len(parts) < 4 || parts[0] != "asset" || parts[1] != "req" {
@@ -259,6 +332,82 @@ func ValidatePublicHTTPURL(raw string) error {
 		return fmt.Errorf("image url host is not allowed")
 	}
 	return nil
+}
+
+func collectJimengFilePaths(raw map[string]any) ([]string, error) {
+	files := make([]string, 0)
+	for _, key := range []string{"files", "input_reference", "file_paths", "filePaths"} {
+		appendReferenceFileValues(&files, raw[key])
+	}
+	for _, file := range files {
+		if strings.HasPrefix(strings.TrimSpace(file), "asset://") {
+			return nil, fmt.Errorf("asset:// references are not supported by jimeng upstream; use public image URLs")
+		}
+		if err := ValidatePublicHTTPURL(file); err != nil {
+			return nil, err
+		}
+	}
+	return files, nil
+}
+
+func validateJimengReferenceMode(mode string, fileCount int) error {
+	switch mode {
+	case "omni":
+		if fileCount < 1 || fileCount > 12 {
+			return fmt.Errorf("reference_mode=omni requires 1-12 URLs")
+		}
+	case "text_to_video":
+		if fileCount != 0 {
+			return fmt.Errorf("reference_mode=text_to_video does not accept URLs")
+		}
+	case "first_frame", "last_frame":
+		if fileCount != 1 {
+			return fmt.Errorf("reference_mode=%s requires exactly 1 URL", mode)
+		}
+	case "both_frames":
+		if fileCount != 2 {
+			return fmt.Errorf("reference_mode=both_frames requires exactly 2 URLs")
+		}
+	default:
+		return fmt.Errorf("reference_mode must be one of omni, first_frame, last_frame, both_frames, text_to_video")
+	}
+	return nil
+}
+
+func jimengDuration(raw map[string]any) (float64, error) {
+	value, ok := raw["duration"]
+	if !ok || stringValue(value) == "" {
+		value = raw["seconds"]
+	}
+	if stringValue(value) == "" {
+		return 4, nil
+	}
+	switch v := value.(type) {
+	case float64:
+		return v, nil
+	case json.Number:
+		n, err := strconv.ParseFloat(v.String(), 64)
+		if err != nil {
+			return 0, fmt.Errorf("duration must be numeric")
+		}
+		return n, nil
+	case string:
+		n, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+		if err != nil {
+			return 0, fmt.Errorf("duration must be numeric")
+		}
+		return n, nil
+	default:
+		text := stringValue(value)
+		if text == "" {
+			return 4, nil
+		}
+		n, err := strconv.ParseFloat(text, 64)
+		if err != nil {
+			return 0, fmt.Errorf("duration must be numeric")
+		}
+		return n, nil
+	}
 }
 
 func isBlockedIP(ip net.IP) bool {

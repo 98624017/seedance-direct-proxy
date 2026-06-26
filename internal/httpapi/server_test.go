@@ -70,6 +70,7 @@ func TestCreateForwardsFileURLsToSeedanceAndPreservesOrder(t *testing.T) {
 	api := Server{
 		Config: config.Config{
 			Port:                     "0",
+			VideoUpstreamProvider:    "legacy",
 			UpstreamBaseURL:          upstream.URL,
 			MaxReferenceFiles:        12,
 			MaxSingleMediaBytes:      50 << 20,
@@ -82,6 +83,7 @@ func TestCreateForwardsFileURLsToSeedanceAndPreservesOrder(t *testing.T) {
 		Client: seedance.Client{
 			HTTPClient: http.DefaultClient,
 			Config: config.Config{
+				VideoUpstreamProvider:    "legacy",
 				UpstreamBaseURL:          upstream.URL,
 				MaxReferenceFiles:        12,
 				MaxSingleMediaBytes:      50 << 20,
@@ -150,6 +152,265 @@ func TestCreateForwardsFileURLsToSeedanceAndPreservesOrder(t *testing.T) {
 	}
 }
 
+func TestCreateJimengForwardsJSONFilePaths(t *testing.T) {
+	var upstreamToken string
+	var upstreamPayload map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/videos/tasks" {
+			t.Fatalf("unexpected upstream path %s", r.URL.Path)
+		}
+		upstreamToken = r.Header.Get("Authorization")
+		if err := json.NewDecoder(r.Body).Decode(&upstreamPayload); err != nil {
+			t.Fatalf("decode upstream payload: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"task_id":"8e8c4f3a2d6b4c9f","status":"pending","created":1781952000}`))
+	}))
+	defer upstream.Close()
+
+	cfg := config.Config{
+		VideoUpstreamProvider: "jimeng",
+		JimengUpstreamBaseURL: upstream.URL,
+		UpstreamCreateTimeout: 30 * time.Second,
+		UpstreamQueryTimeout:  30 * time.Second,
+	}
+	api := Server{Config: cfg, Client: seedance.Client{HTTPClient: http.DefaultClient, Config: cfg}}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/videos", strings.NewReader(`{
+		"model":"jimeng-video-seedance-2.0-vip",
+		"prompt":"use @1",
+		"aspect_ratio":"4:3",
+		"seconds":"6",
+		"files":["https://asset.test/a.jpg","https://asset.test/a.jpg"],
+		"input_reference":"https://asset.test/b.jpg"
+	}`))
+	req.Header.Set("Authorization", "Bearer http://ignored.example|jimeng-token")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	api.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if upstreamToken != "Bearer jimeng-token" {
+		t.Fatalf("authorization = %q", upstreamToken)
+	}
+	if upstreamPayload["model"] != "jimeng-video-seedance-2.0-vip" ||
+		upstreamPayload["prompt"] != "use @1" ||
+		upstreamPayload["ratio"] != "4:3" ||
+		upstreamPayload["resolution"] != "720p" ||
+		upstreamPayload["reference_mode"] != "omni" ||
+		upstreamPayload["duration"] != float64(6) {
+		t.Fatalf("payload = %#v", upstreamPayload)
+	}
+	filePaths := upstreamPayload["file_paths"].([]any)
+	want := []string{"https://asset.test/a.jpg", "https://asset.test/a.jpg", "https://asset.test/b.jpg"}
+	if len(filePaths) != len(want) {
+		t.Fatalf("file_paths = %#v", filePaths)
+	}
+	for i := range want {
+		if filePaths[i] != want[i] {
+			t.Fatalf("file_paths[%d] = %#v, want %q", i, filePaths[i], want[i])
+		}
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &parsed); err != nil {
+		t.Fatalf("response JSON error = %v", err)
+	}
+	if parsed["id"] != "8e8c4f3a2d6b4c9f" || parsed["status"] != "queued" || parsed["progress"] != float64(0) {
+		t.Fatalf("unexpected response: %#v", parsed)
+	}
+}
+
+func TestCreateJimengRejectsAssetModelAndAssetURI(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("should not call upstream")
+	}))
+	defer upstream.Close()
+
+	cfg := config.Config{VideoUpstreamProvider: "jimeng", JimengUpstreamBaseURL: upstream.URL}
+	api := Server{Config: cfg, Client: seedance.Client{HTTPClient: http.DefaultClient, Config: cfg}}
+
+	for _, body := range []string{
+		`{"model":"seedance-asset","prompt":"asset","input_reference":"https://asset.test/a.jpg"}`,
+		`{"model":"m","prompt":"p","files":["asset://asset-1"]}`,
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/v1/videos", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer token")
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		api.Handler().ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s status = %d body=%s", body, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestQueryJimengUsesStringTaskIDAndMapsCompleted(t *testing.T) {
+	var upstreamToken string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/videos/tasks/8e8c4f3a2d6b4c9f" {
+			t.Fatalf("unexpected upstream path %s", r.URL.Path)
+		}
+		upstreamToken = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"task_id":"8e8c4f3a2d6b4c9f","status":"completed","progress":"完成","result":{"url":"https://cdn.test/video.mp4"}}`))
+	}))
+	defer upstream.Close()
+
+	cfg := config.Config{VideoUpstreamProvider: "jimeng", JimengUpstreamBaseURL: upstream.URL, UpstreamQueryTimeout: 30 * time.Second}
+	api := Server{Config: cfg, Client: seedance.Client{HTTPClient: http.DefaultClient, Config: cfg}}
+	req := httptest.NewRequest(http.MethodGet, "/v1/videos/8e8c4f3a2d6b4c9f", nil)
+	req.Header.Set("Authorization", "Bearer jimeng-token")
+	rec := httptest.NewRecorder()
+
+	api.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if upstreamToken != "Bearer jimeng-token" {
+		t.Fatalf("authorization = %q", upstreamToken)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &parsed); err != nil {
+		t.Fatalf("response JSON error = %v", err)
+	}
+	if parsed["status"] != "completed" || parsed["url"] != "https://cdn.test/video.mp4" || parsed["video_url"] != "https://cdn.test/video.mp4" {
+		t.Fatalf("unexpected response: %#v", parsed)
+	}
+}
+
+func TestQueryJimengCompletedWithoutURLStaysCompleted(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"task_id":"task-no-url","status":"completed","progress":"完成"}`))
+	}))
+	defer upstream.Close()
+
+	cfg := config.Config{VideoUpstreamProvider: "jimeng", JimengUpstreamBaseURL: upstream.URL, UpstreamQueryTimeout: 30 * time.Second}
+	api := Server{Config: cfg, Client: seedance.Client{HTTPClient: http.DefaultClient, Config: cfg}}
+	req := httptest.NewRequest(http.MethodGet, "/v1/videos/task-no-url", nil)
+	req.Header.Set("Authorization", "Bearer jimeng-token")
+	rec := httptest.NewRecorder()
+
+	api.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &parsed); err != nil {
+		t.Fatalf("response JSON error = %v", err)
+	}
+	if parsed["status"] != "completed" || parsed["url"] != nil || parsed["video_url"] != nil {
+		t.Fatalf("unexpected response: %#v", parsed)
+	}
+	metadata := parsed["metadata"].(map[string]any)["jimeng"].(map[string]any)
+	if metadata["missing_result_url"] != true {
+		t.Fatalf("metadata = %#v", metadata)
+	}
+	if parsed["error"] == nil {
+		t.Fatalf("expected error detail: %#v", parsed)
+	}
+}
+
+func TestQueryJimengResultExpiredOmitsURL(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"task_id":"expired-task","status":"completed","progress":"结果已过期","result":{"url":"https://cdn.test/expired.mp4"},"result_expired":true}`))
+	}))
+	defer upstream.Close()
+
+	cfg := config.Config{VideoUpstreamProvider: "jimeng", JimengUpstreamBaseURL: upstream.URL, UpstreamQueryTimeout: 30 * time.Second}
+	api := Server{Config: cfg, Client: seedance.Client{HTTPClient: http.DefaultClient, Config: cfg}}
+	req := httptest.NewRequest(http.MethodGet, "/v1/videos/expired-task", nil)
+	req.Header.Set("Authorization", "Bearer jimeng-token")
+	rec := httptest.NewRecorder()
+
+	api.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &parsed); err != nil {
+		t.Fatalf("response JSON error = %v", err)
+	}
+	if parsed["status"] != "completed" || parsed["url"] != nil || parsed["video_url"] != nil {
+		t.Fatalf("unexpected response: %#v", parsed)
+	}
+	metadata := parsed["metadata"].(map[string]any)["jimeng"].(map[string]any)
+	if metadata["result_expired"] != true {
+		t.Fatalf("metadata = %#v", metadata)
+	}
+}
+
+func TestQueryJimengFailedAndUnknownStatusMapping(t *testing.T) {
+	tests := []struct {
+		name       string
+		upstream   string
+		wantStatus string
+		wantError  bool
+		wantMeta   string
+	}{
+		{
+			name:       "failed",
+			upstream:   `{"task_id":"failed-task","status":"failed","error":{"message":"生成失败"}}`,
+			wantStatus: "failed",
+			wantError:  true,
+		},
+		{
+			name:       "unknown",
+			upstream:   `{"task_id":"unknown-task","status":"mystery","progress":"排队中"}`,
+			wantStatus: "in_progress",
+			wantMeta:   "unknown_status",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tt.upstream))
+			}))
+			defer upstream.Close()
+
+			cfg := config.Config{VideoUpstreamProvider: "jimeng", JimengUpstreamBaseURL: upstream.URL, UpstreamQueryTimeout: 30 * time.Second}
+			api := Server{Config: cfg, Client: seedance.Client{HTTPClient: http.DefaultClient, Config: cfg}}
+			req := httptest.NewRequest(http.MethodGet, "/v1/videos/"+tt.name+"-task", nil)
+			req.Header.Set("Authorization", "Bearer jimeng-token")
+			rec := httptest.NewRecorder()
+
+			api.Handler().ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+			}
+			var parsed map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &parsed); err != nil {
+				t.Fatalf("response JSON error = %v", err)
+			}
+			if parsed["status"] != tt.wantStatus {
+				t.Fatalf("unexpected response: %#v", parsed)
+			}
+			if tt.wantError && parsed["error"] == nil {
+				t.Fatalf("expected error: %#v", parsed)
+			}
+			if tt.wantMeta != "" {
+				metadata := parsed["metadata"].(map[string]any)["jimeng"].(map[string]any)
+				if metadata[tt.wantMeta] != true {
+					t.Fatalf("metadata = %#v", metadata)
+				}
+			}
+		})
+	}
+}
+
 func TestRootSupportsNewAPIProbe(t *testing.T) {
 	api := Server{}
 
@@ -200,7 +461,7 @@ func TestQueryMapsSeedanceStatusAndVideoURL(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	cfg := config.Config{UpstreamBaseURL: upstream.URL, UpstreamQueryTimeout: 30 * time.Second}
+	cfg := config.Config{VideoUpstreamProvider: "legacy", UpstreamBaseURL: upstream.URL, UpstreamQueryTimeout: 30 * time.Second}
 	api := Server{Config: cfg, Client: seedance.Client{HTTPClient: http.DefaultClient, Config: cfg}}
 	req := httptest.NewRequest(http.MethodGet, "/v1/videos/88", nil)
 	req.Header.Set("Authorization", "Bearer seedance-token")
@@ -235,6 +496,7 @@ func TestUpstreamBusinessFailureReturnsBadGateway(t *testing.T) {
 	defer upstream.Close()
 
 	cfg := config.Config{
+		VideoUpstreamProvider: "legacy",
 		UpstreamBaseURL:       upstream.URL,
 		MaxReferenceFiles:     12,
 		UpstreamCreateTimeout: 30 * time.Second,
@@ -260,7 +522,7 @@ func TestUpstreamBusinessFailureReturnsBadGateway(t *testing.T) {
 }
 
 func TestCreateRejectsMissingAuthAndTooManyFiles(t *testing.T) {
-	cfg := config.Config{MaxReferenceFiles: 1, UpstreamBaseURL: "http://upstream.test"}
+	cfg := config.Config{VideoUpstreamProvider: "legacy", MaxReferenceFiles: 1, UpstreamBaseURL: "http://upstream.test"}
 	api := Server{Config: cfg, Client: seedance.Client{HTTPClient: http.DefaultClient, Config: cfg}}
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/videos", strings.NewReader(`{"model":"m","prompt":"p"}`))
@@ -300,6 +562,7 @@ func TestCreateAssetUsesAssetUpstreamResourcesAPI(t *testing.T) {
 	defer assetUpstream.Close()
 
 	cfg := config.Config{
+		VideoUpstreamProvider: "legacy",
 		UpstreamBaseURL:       videoUpstream.URL,
 		AssetUpstreamBaseURL:  assetUpstream.URL,
 		UpstreamCreateTimeout: 30 * time.Second,
@@ -361,6 +624,7 @@ func TestCreateAssetRejectsNameThatWouldExceedUpstreamLimit(t *testing.T) {
 	defer upstream.Close()
 
 	cfg := config.Config{
+		VideoUpstreamProvider: "legacy",
 		UpstreamBaseURL:       upstream.URL,
 		AssetUpstreamBaseURL:  upstream.URL,
 		UpstreamCreateTimeout: 30 * time.Second,
@@ -404,6 +668,7 @@ func TestCreateAssetAllowsMaximumDisplayNameLength(t *testing.T) {
 	defer upstream.Close()
 
 	cfg := config.Config{
+		VideoUpstreamProvider: "legacy",
 		UpstreamBaseURL:       upstream.URL,
 		AssetUpstreamBaseURL:  upstream.URL,
 		UpstreamCreateTimeout: 30 * time.Second,
@@ -475,12 +740,13 @@ func TestQueryAssetReturnsAssetID(t *testing.T) {
 	defer assetUpstream.Close()
 
 	cfg := config.Config{
-		UpstreamBaseURL:      videoUpstream.URL,
-		AssetUpstreamBaseURL: assetUpstream.URL,
-		UpstreamQueryTimeout: 30 * time.Second,
-		AssetListBasePages:   10,
-		AssetListMediumPages: 20,
-		AssetListMaxPages:    50,
+		VideoUpstreamProvider: "legacy",
+		UpstreamBaseURL:       videoUpstream.URL,
+		AssetUpstreamBaseURL:  assetUpstream.URL,
+		UpstreamQueryTimeout:  30 * time.Second,
+		AssetListBasePages:    10,
+		AssetListMediumPages:  20,
+		AssetListMaxPages:     50,
 	}
 	api := Server{Config: cfg, Client: seedance.Client{HTTPClient: http.DefaultClient, Config: cfg}}
 	req := httptest.NewRequest(http.MethodGet, "/v1/videos/asset_req_1780830000_abcdef123456", nil)
@@ -532,10 +798,11 @@ func TestQueryAssetMatchesOnlyTraceSuffix(t *testing.T) {
 	defer upstream.Close()
 
 	cfg := config.Config{
-		UpstreamBaseURL:      upstream.URL,
-		AssetUpstreamBaseURL: upstream.URL,
-		UpstreamQueryTimeout: 30 * time.Second,
-		AssetListBasePages:   10,
+		VideoUpstreamProvider: "legacy",
+		UpstreamBaseURL:       upstream.URL,
+		AssetUpstreamBaseURL:  upstream.URL,
+		UpstreamQueryTimeout:  30 * time.Second,
+		AssetListBasePages:    10,
 	}
 	api := Server{Config: cfg, Client: seedance.Client{HTTPClient: http.DefaultClient, Config: cfg}}
 	req := httptest.NewRequest(http.MethodGet, "/v1/videos/asset_req_1780830000_abcdef123456", nil)
@@ -574,11 +841,12 @@ func TestQueryAssetScansMorePagesForOlderTask(t *testing.T) {
 	defer upstream.Close()
 
 	cfg := config.Config{
-		UpstreamBaseURL:      upstream.URL,
-		UpstreamQueryTimeout: 30 * time.Second,
-		AssetListBasePages:   10,
-		AssetListMediumPages: 20,
-		AssetListMaxPages:    50,
+		VideoUpstreamProvider: "legacy",
+		UpstreamBaseURL:       upstream.URL,
+		UpstreamQueryTimeout:  30 * time.Second,
+		AssetListBasePages:    10,
+		AssetListMediumPages:  20,
+		AssetListMaxPages:     50,
 	}
 	api := Server{
 		Config: cfg,
@@ -616,9 +884,10 @@ func TestQueryAssetRejectsInvalidAssetTaskIDBeforeUpstream(t *testing.T) {
 	defer upstream.Close()
 
 	cfg := config.Config{
-		UpstreamBaseURL:      upstream.URL,
-		AssetUpstreamBaseURL: upstream.URL,
-		UpstreamQueryTimeout: 30 * time.Second,
+		VideoUpstreamProvider: "legacy",
+		UpstreamBaseURL:       upstream.URL,
+		AssetUpstreamBaseURL:  upstream.URL,
+		UpstreamQueryTimeout:  30 * time.Second,
 	}
 	api := Server{Config: cfg, Client: seedance.Client{HTTPClient: http.DefaultClient, Config: cfg}}
 

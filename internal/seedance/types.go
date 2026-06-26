@@ -90,6 +90,28 @@ type DeletedAsset struct {
 	AssetURI   string
 }
 
+type JimengCreateResponse struct {
+	TaskID  string `json:"task_id"`
+	Status  string `json:"status"`
+	Created int64  `json:"created"`
+}
+
+type JimengQueryResponse struct {
+	TaskID        string       `json:"task_id"`
+	Status        string       `json:"status"`
+	Progress      any          `json:"progress"`
+	Result        JimengResult `json:"result"`
+	ResultExpired bool         `json:"result_expired"`
+	Error         any          `json:"error"`
+	Model         string       `json:"model"`
+	Cost          any          `json:"cost"`
+	InputFiles    any          `json:"input_files"`
+}
+
+type JimengResult struct {
+	URL string `json:"url"`
+}
+
 func NormalizeCreate(resp CreateResponse, model string, now time.Time) openai.VideoResponse {
 	id := strconv.FormatInt(resp.Data.ID, 10)
 	return openai.VideoResponse{
@@ -109,6 +131,79 @@ func NormalizeCreate(resp CreateResponse, model string, now time.Time) openai.Vi
 			},
 		},
 	}
+}
+
+func NormalizeJimengCreate(resp JimengCreateResponse, model string) openai.VideoResponse {
+	status := JimengStatusName(resp.Status)
+	return openai.VideoResponse{
+		ID:        resp.TaskID,
+		TaskID:    resp.TaskID,
+		Object:    "video",
+		Model:     model,
+		Status:    status,
+		Progress:  Progress(status),
+		CreatedAt: resp.Created,
+		Metadata: map[string]any{
+			"jimeng": map[string]any{
+				"status": resp.Status,
+			},
+		},
+	}
+}
+
+func NormalizeJimengQuery(resp JimengQueryResponse) openai.VideoResponse {
+	status := JimengStatusName(resp.Status)
+	progress := Progress(status)
+	if status == "failed" {
+		progress = 100
+	}
+	jimengMeta := map[string]any{
+		"status":     resp.Status,
+		"raw_status": resp.Status,
+		"progress":   resp.Progress,
+	}
+	if resp.Cost != nil {
+		jimengMeta["cost"] = resp.Cost
+	}
+	if resp.InputFiles != nil {
+		jimengMeta["input_files"] = resp.InputFiles
+	}
+
+	out := openai.VideoResponse{
+		ID:       resp.TaskID,
+		TaskID:   resp.TaskID,
+		Object:   "video",
+		Model:    resp.Model,
+		Status:   status,
+		Progress: progress,
+		Metadata: map[string]any{"jimeng": jimengMeta},
+	}
+
+	resultURL := strings.TrimSpace(resp.Result.URL)
+	if status == "completed" && resultURL != "" && !resp.ResultExpired {
+		out.URL = resultURL
+		out.VideoURL = resultURL
+	}
+	if status == "completed" && resp.ResultExpired {
+		jimengMeta["result_expired"] = true
+		out.Error = &openai.ErrorDetail{Code: "result_expired", Message: "result expired, please regenerate"}
+	}
+	if status == "completed" && resultURL == "" && !resp.ResultExpired {
+		jimengMeta["missing_result_url"] = true
+		out.Error = &openai.ErrorDetail{Code: "missing_result_url", Message: "upstream completed without result url"}
+	}
+	if status == "failed" {
+		message := jimengErrorMessage(resp.Error)
+		if message == "" {
+			message = "Jimeng task failed"
+		}
+		jimengMeta["error"] = message
+		out.Error = &openai.ErrorDetail{Message: message}
+	}
+	if status == "in_progress" && !isKnownJimengStatus(resp.Status) {
+		jimengMeta["unknown_status"] = true
+	}
+	return out
 }
 
 func NormalizeQuery(resp QueryResponse, model string) openai.VideoResponse {
@@ -274,6 +369,48 @@ func StatusName(status int) string {
 	default:
 		return "queued"
 	}
+}
+
+func JimengStatusName(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "pending":
+		return "queued"
+	case "processing":
+		return "in_progress"
+	case "completed":
+		return "completed"
+	case "failed":
+		return "failed"
+	default:
+		return "in_progress"
+	}
+}
+
+func isKnownJimengStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "pending", "processing", "completed", "failed":
+		return true
+	default:
+		return false
+	}
+}
+
+func jimengErrorMessage(value any) string {
+	switch v := value.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case map[string]any:
+		for _, key := range []string{"message", "error", "detail"} {
+			if s, ok := v[key].(string); ok && strings.TrimSpace(s) != "" {
+				return strings.TrimSpace(s)
+			}
+		}
+	case nil:
+		return ""
+	default:
+		return strings.TrimSpace(fmt.Sprintf("%v", v))
+	}
+	return ""
 }
 
 func Progress(status string) int {

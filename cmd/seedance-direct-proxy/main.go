@@ -19,6 +19,13 @@ import (
 func main() {
 	cfg := config.Load()
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	if cfg.VideoUpstreamInvalid {
+		logger.Warn(
+			"invalid VIDEO_UPSTREAM_PROVIDER, falling back to jimeng",
+			"raw_provider", os.Getenv("VIDEO_UPSTREAM_PROVIDER"),
+			"fallback", cfg.VideoUpstreamProvider,
+		)
+	}
 
 	transport := &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
@@ -54,7 +61,13 @@ func main() {
 
 	errCh := make(chan error, 1)
 	go func() {
-		logger.Info("seedance direct proxy listening", "addr", server.Addr, "upstream", cfg.UpstreamBaseURL)
+		logger.Info(
+			"seedance direct proxy listening",
+			"addr", server.Addr,
+			"provider", cfg.VideoUpstreamProvider,
+			"legacy_upstream", cfg.UpstreamBaseURL,
+			"jimeng_upstream", cfg.JimengUpstreamBaseURL,
+		)
 		errCh <- server.ListenAndServe()
 	}()
 

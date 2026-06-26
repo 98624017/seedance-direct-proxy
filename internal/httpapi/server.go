@@ -82,12 +82,31 @@ func (s Server) handleVideos(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if openai.IsAssetModel(openai.ModelFromBody(body)) {
+		if s.videoUpstreamProvider() == "jimeng" {
+			writeError(w, http.StatusBadRequest, "seedance-asset is not supported by jimeng upstream; use a video model and pass public image URLs in files", nil)
+			return
+		}
 		assetReq, err := openai.ParseAssetRequest(body)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error(), nil)
 			return
 		}
 		resp, err := s.Client.CreateAsset(r.Context(), assetReq, token)
+		if err != nil {
+			s.writeUpstreamError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	if s.videoUpstreamProvider() == "jimeng" {
+		jimengReq, err := openai.ParseJimengRequest(body)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error(), nil)
+			return
+		}
+		resp, err := s.Client.CreateJimeng(r.Context(), jimengReq, token)
 		if err != nil {
 			s.writeUpstreamError(w, err)
 			return
@@ -130,6 +149,15 @@ func (s Server) handleVideoTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not found", nil)
 		return
 	}
+	if s.videoUpstreamProvider() == "jimeng" {
+		resp, err := s.Client.QueryJimeng(r.Context(), taskIDRaw, token)
+		if err != nil {
+			s.writeUpstreamError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
 	if strings.HasPrefix(taskIDRaw, "asset_req_") {
 		if err := openai.ValidateAssetTaskID(taskIDRaw); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error(), nil)
@@ -156,6 +184,13 @@ func (s Server) handleVideoTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s Server) videoUpstreamProvider() string {
+	if s.Config.VideoUpstreamProvider == "legacy" {
+		return "legacy"
+	}
+	return "jimeng"
 }
 
 func (s Server) handleTokenAssetDelete(w http.ResponseWriter, r *http.Request) {

@@ -168,6 +168,108 @@ func TestParseCreateRequestRequiresModelAndPrompt(t *testing.T) {
 	}
 }
 
+func TestParseJimengRequestNormalizesFieldsAndPreservesDuplicates(t *testing.T) {
+	raw := []byte(`{
+		"model":"jimeng-video-seedance-2.0-vip",
+		"prompt":"use @1 and @2",
+		"aspect_ratio":"4:3",
+		"duration":"6",
+		"files":["https://asset.test/a.jpg","https://asset.test/a.jpg"],
+		"input_reference":"https://asset.test/b.jpg",
+		"file_paths":["https://asset.test/c.jpg"],
+		"filePaths":["https://asset.test/d.jpg"]
+	}`)
+	req, err := ParseJimengRequest(raw)
+	if err != nil {
+		t.Fatalf("ParseJimengRequest() error = %v", err)
+	}
+	if req.Model != "jimeng-video-seedance-2.0-vip" || req.Prompt != "use @1 and @2" {
+		t.Fatalf("unexpected request: %#v", req)
+	}
+	if req.Ratio != "4:3" || req.Resolution != "720p" || req.Duration != 6 || req.ReferenceMode != "omni" {
+		t.Fatalf("unexpected normalized fields: %#v", req)
+	}
+	want := []string{
+		"https://asset.test/a.jpg",
+		"https://asset.test/a.jpg",
+		"https://asset.test/b.jpg",
+		"https://asset.test/c.jpg",
+		"https://asset.test/d.jpg",
+	}
+	if len(req.FilePaths) != len(want) {
+		t.Fatalf("file paths = %#v", req.FilePaths)
+	}
+	for i := range want {
+		if req.FilePaths[i] != want[i] {
+			t.Fatalf("file_paths[%d] = %q, want %q", i, req.FilePaths[i], want[i])
+		}
+	}
+}
+
+func TestParseJimengRequestReferenceModeRules(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		wantErr bool
+	}{
+		{
+			name: "text to video default",
+			raw:  `{"model":"m","prompt":"p"}`,
+		},
+		{
+			name: "both frames same url allowed",
+			raw:  `{"model":"m","prompt":"p","reference_mode":"both_frames","files":["https://asset.test/a.jpg","https://asset.test/a.jpg"]}`,
+		},
+		{
+			name:    "both frames requires two",
+			raw:     `{"model":"m","prompt":"p","reference_mode":"both_frames","files":["https://asset.test/a.jpg"]}`,
+			wantErr: true,
+		},
+		{
+			name:    "first frame requires one",
+			raw:     `{"model":"m","prompt":"p","reference_mode":"first_frame","files":["https://asset.test/a.jpg","https://asset.test/b.jpg"]}`,
+			wantErr: true,
+		},
+		{
+			name:    "text to video rejects urls",
+			raw:     `{"model":"m","prompt":"p","reference_mode":"text_to_video","files":["https://asset.test/a.jpg"]}`,
+			wantErr: true,
+		},
+		{
+			name:    "chinese reference mode rejected",
+			raw:     `{"model":"m","prompt":"p","reference_mode":"首帧参考","files":["https://asset.test/a.jpg"]}`,
+			wantErr: true,
+		},
+		{
+			name:    "asset uri rejected",
+			raw:     `{"model":"m","prompt":"p","files":["asset://asset-1"]}`,
+			wantErr: true,
+		},
+		{
+			name:    "unsafe url rejected",
+			raw:     `{"model":"m","prompt":"p","files":["http://127.0.0.1/a.jpg"]}`,
+			wantErr: true,
+		},
+		{
+			name:    "asset model rejected",
+			raw:     `{"model":"seedance-asset","prompt":"p","files":["https://asset.test/a.jpg"]}`,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseJimengRequest([]byte(tt.raw))
+			if tt.wantErr && err == nil {
+				t.Fatalf("expected error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 func TestParseAssetRequestTakesFirstImageAndCountsIgnored(t *testing.T) {
 	raw := []byte(`{
 		"model":"seedance-asset",
